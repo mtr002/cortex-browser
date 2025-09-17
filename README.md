@@ -1,2 +1,2 @@
-# cortex-Browser
+# cortex-browser
 Agentic Web Browser 
