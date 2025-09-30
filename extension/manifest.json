@@ -6,7 +6,8 @@
     "permissions": [
       "activeTab",
       "storage",
-      "tabs"
+      "tabs",
+      "sidePanel"
     ],
     "background": {
       "service_worker": "background.js"
@@ -23,5 +24,8 @@
         "resources": ["*"],
         "matches": ["<all_urls>"]
       }
-    ]
+    ],
+    "side_panel": {
+      "default_path": "sidepanel.html"
+    }
   }
