@@ -97,6 +97,9 @@ function handleBackendMessage(message) {
     case 'ERROR':
       handleBackendError(message.payload);
       break;
+    case 'CONTENT_ANALYSIS':
+      handleContentAnalysis(message.payload);
+      break;
     default:
       console.log('Unknown backend message type:', message.type);
   }
@@ -129,7 +132,8 @@ async function executeCommand(command) {
     // Notify sidepanel of successful execution
     notifySidepanel('COMMAND_EXECUTED', {
       action: command.action,
-      details: result?.details || null
+      details: result?.details || null,
+      elementsFound: result?.elementsFound || null
     });
 
   } catch (error) {
@@ -149,20 +153,56 @@ async function handleNavigateCommand(tab, command) {
 }
 
 async function sendCommandToContent(tab, command) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tab.id, {
-      type: 'EXECUTE_COMMAND',
-      payload: command
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else if (response?.success) {
-        resolve(response);
-      } else {
-        reject(new Error(response?.error || 'Command execution failed'));
-      }
+  try {
+    // First, ensure content script is injected
+    await ensureContentScriptInjected(tab.id);
+    
+    return new Promise((resolve, reject) => {
+      chrome.tabs.sendMessage(tab.id, {
+        type: 'EXECUTE_COMMAND',
+        payload: command
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('Content script message error:', chrome.runtime.lastError.message);
+          reject(new Error(`Content script error: ${chrome.runtime.lastError.message}`));
+        } else if (response?.success) {
+          resolve(response);
+        } else {
+          reject(new Error(response?.error || 'Command execution failed'));
+        }
+      });
     });
-  });
+  } catch (error) {
+    throw new Error(`Failed to inject content script: ${error.message}`);
+  }
+}
+
+async function ensureContentScriptInjected(tabId) {
+  try {
+    // Test if content script is already available
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+    if (response && response.status === 'ready') {
+      return; // Content script is ready
+    }
+  } catch (error) {
+    // Content script not available, inject it
+    console.log('Content script not found, injecting...');
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      files: ['content.js']
+    });
+    
+    // Wait a moment for the script to initialize
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    console.log('Content script injected successfully');
+  } catch (error) {
+    console.error('Failed to inject content script:', error);
+    throw error;
+  }
 }
 
 function handleTaskComplete(payload) {
@@ -174,6 +214,11 @@ function handleBackendError(payload) {
     action: 'backend_processing',
     error: payload.message || 'Backend error occurred'
   });
+}
+
+function handleContentAnalysis(payload) {
+  console.log('Content analysis received:', payload);
+  notifySidepanel('CONTENT_ANALYSIS', payload);
 }
 
 function notifyConnectionStatus(status, message) {
@@ -207,6 +252,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       
       const success = sendToBackend(message);
       sendResponse({ status: success ? 'sent' : 'failed' });
+      break;
+      
+    case 'PAGE_CONTENT':
+      if (!isConnected) {
+        sendResponse({ status: 'error', message: 'Backend not connected' });
+        return;
+      }
+      
+      const contentSuccess = sendToBackend(message);
+      sendResponse({ status: contentSuccess ? 'sent' : 'failed' });
       break;
 
     default:

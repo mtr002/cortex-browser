@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/gorilla/websocket"
 )
 
@@ -27,6 +29,20 @@ type CommandPayload struct {
 	URL      string `json:"url,omitempty"`
 	Selector string `json:"selector,omitempty"`
 	Text     string `json:"text,omitempty"`
+}
+
+type PageContentPayload struct {
+	HTML       string `json:"html"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
+	Text       string `json:"text"`
+	ReadyState string `json:"readyState"`
+}
+
+type ContentAnalysisResult struct {
+	Selectors   []string `json:"selectors"`
+	Suggestions []string `json:"suggestions"`
+	ContentType string   `json:"contentType"`
 }
 
 type TaskCompletePayload struct {
@@ -94,6 +110,8 @@ func handleMessageWithConnection(conn *websocket.Conn, messageBytes []byte) erro
 		return nil
 	case "EXECUTE_TASK":
 		return handleExecuteTaskWithCompletion(conn, msg.Payload)
+	case "PAGE_CONTENT":
+		return handlePageContent(conn, msg.Payload)
 	default:
 		log.Printf("Unknown message type: %s", msg.Type)
 		return sendMessage(conn, &Message{
@@ -199,50 +217,52 @@ func sendMessage(conn *websocket.Conn, message *Message) error {
 
 func parseGoalToCommand(goal string) *CommandPayload {
 	goal = strings.ToLower(strings.TrimSpace(goal))
+	log.Printf("Parsing goal: %s", goal)
 
-	// Simple rule-based command generation
-	if strings.Contains(goal, "navigate") || strings.Contains(goal, "go to") {
-		// Extract URL from goal
-		if strings.Contains(goal, "google.com") || strings.Contains(goal, "google") {
-			return &CommandPayload{
-				Action: "navigate",
-				URL:    "https://google.com",
-			}
-		} else if strings.Contains(goal, "example.com") {
-			return &CommandPayload{
-				Action: "navigate",
-				URL:    "https://example.com",
-			}
-		} else if strings.Contains(goal, "github.com") {
-			return &CommandPayload{
-				Action: "navigate",
-				URL:    "https://github.com",
-			}
-		}
-		// Default navigation
+	// Enhanced rule-based command generation
+	if containsNavigationKeywords(goal) {
 		return &CommandPayload{
 			Action: "navigate",
 			URL:    extractURLFromGoal(goal),
 		}
 	}
 
-	if strings.Contains(goal, "click") {
+	// Handle page content requests
+	if containsContentKeywords(goal) {
+		return &CommandPayload{
+			Action: "get_content",
+		}
+	}
+
+	// Handle search commands
+	if containsSearchKeywords(goal) {
+		return &CommandPayload{
+			Action:   "input",
+			Selector: "input[type='search'], input[name='q'], #search, [role='searchbox']",
+			Text:     extractSearchTermFromGoal(goal),
+		}
+	}
+
+	// Handle click commands
+	if containsClickKeywords(goal) {
 		return &CommandPayload{
 			Action:   "click",
 			Selector: extractSelectorFromGoal(goal),
 		}
 	}
 
-	if strings.Contains(goal, "search") || strings.Contains(goal, "type") {
+	// Multi-step goals (navigate and search)
+	if containsNavigationKeywords(goal) && containsSearchKeywords(goal) {
+		// For now, handle navigation first
+		// TODO: Implement multi-step command sequences
 		return &CommandPayload{
-			Action:   "input",
-			Selector: "input[type='search'], input[name='q'], #search",
-			Text:     extractSearchTermFromGoal(goal),
+			Action: "navigate",
+			URL:    extractURLFromGoal(goal),
 		}
 	}
 
 	// Default: try to navigate if it looks like a URL
-	if strings.Contains(goal, ".com") || strings.Contains(goal, ".org") || strings.Contains(goal, "http") {
+	if containsURL(goal) {
 		return &CommandPayload{
 			Action: "navigate",
 			URL:    extractURLFromGoal(goal),
@@ -253,16 +273,43 @@ func parseGoalToCommand(goal string) *CommandPayload {
 }
 
 func extractURLFromGoal(goal string) string {
-	// Simple URL extraction
+	// Enhanced URL extraction with regex
+	urlRegex := regexp.MustCompile(`(?i)(?:https?://)?(?:www\.)?([a-zA-Z0-9-]+\.(?:com|org|net|edu|gov|io|co))(?:/[^\s]*)?`)
+	match := urlRegex.FindString(goal)
+	if match != "" {
+		if !strings.HasPrefix(match, "http") {
+			return "https://" + match
+		}
+		return match
+	}
+
+	// Fallback to simple word extraction
 	words := strings.Fields(goal)
 	for _, word := range words {
-		if strings.Contains(word, ".com") || strings.Contains(word, ".org") || strings.HasPrefix(word, "http") {
+		if containsURL(word) {
 			if !strings.HasPrefix(word, "http") {
 				return "https://" + word
 			}
 			return word
 		}
 	}
+
+	// Common site mappings
+	siteMap := map[string]string{
+		"google":   "https://google.com",
+		"github":   "https://github.com",
+		"youtube":  "https://youtube.com",
+		"facebook": "https://facebook.com",
+		"twitter":  "https://twitter.com",
+		"linkedin": "https://linkedin.com",
+	}
+
+	for site, url := range siteMap {
+		if strings.Contains(goal, site) {
+			return url
+		}
+	}
+
 	return "https://google.com" // fallback
 }
 
@@ -291,6 +338,213 @@ func extractSearchTermFromGoal(goal string) string {
 
 	// If no pattern found, return the whole goal as search term
 	return strings.TrimSpace(goal)
+}
+
+// New helper functions for enhanced goal parsing
+func containsNavigationKeywords(goal string) bool {
+	keywords := []string{"navigate", "go to", "visit", "open", "browse to"}
+	for _, keyword := range keywords {
+		if strings.Contains(goal, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsContentKeywords(goal string) bool {
+	keywords := []string{"get content", "page content", "read page", "extract content", "analyze page"}
+	for _, keyword := range keywords {
+		if strings.Contains(goal, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSearchKeywords(goal string) bool {
+	keywords := []string{"search", "find", "look for", "type"}
+	for _, keyword := range keywords {
+		if strings.Contains(goal, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsClickKeywords(goal string) bool {
+	keywords := []string{"click", "press", "tap", "select"}
+	for _, keyword := range keywords {
+		if strings.Contains(goal, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsURL(goal string) bool {
+	// Check for common URL patterns
+	urlPatterns := []string{".com", ".org", ".net", ".edu", ".gov", "http", "www."}
+	for _, pattern := range urlPatterns {
+		if strings.Contains(goal, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// Page content handler for Phase 4
+func handlePageContent(conn *websocket.Conn, payload interface{}) error {
+	// Parse the page content payload
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return sendMessage(conn, &Message{
+			Type: "ERROR",
+			Payload: ErrorPayload{
+				Message: "Failed to parse page content payload",
+				Code:    "PAYLOAD_ERROR",
+			},
+		})
+	}
+
+	var contentPayload PageContentPayload
+	if err := json.Unmarshal(payloadBytes, &contentPayload); err != nil {
+		return sendMessage(conn, &Message{
+			Type: "ERROR",
+			Payload: ErrorPayload{
+				Message: "Invalid page content format",
+				Code:    "CONTENT_FORMAT_ERROR",
+			},
+		})
+	}
+
+	log.Printf("Analyzing page content from: %s", contentPayload.URL)
+
+	// Analyze the HTML content with goquery
+	analysis, err := analyzePageContent(contentPayload.HTML)
+	if err != nil {
+		log.Printf("Failed to analyze page content: %v", err)
+		return sendMessage(conn, &Message{
+			Type: "ERROR",
+			Payload: ErrorPayload{
+				Message: "Failed to analyze page content",
+				Code:    "ANALYSIS_ERROR",
+			},
+		})
+	}
+
+	// Send analysis result back
+	return sendMessage(conn, &Message{
+		Type:    "CONTENT_ANALYSIS",
+		Payload: analysis,
+	})
+}
+
+// Analyze page content using goquery
+func analyzePageContent(htmlContent string) (*ContentAnalysisResult, error) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse HTML: %v", err)
+	}
+
+	result := &ContentAnalysisResult{
+		Selectors:   []string{},
+		Suggestions: []string{},
+	}
+
+	// Find interactive elements
+	doc.Find("input, button, a, select, textarea").Each(func(i int, s *goquery.Selection) {
+		// Generate selector for this element
+		selector := generateSmartSelector(s)
+		if selector != "" {
+			result.Selectors = append(result.Selectors, selector)
+		}
+	})
+
+	// Determine content type
+	result.ContentType = determineContentType(doc)
+
+	// Generate suggestions based on content
+	result.Suggestions = generateActionSuggestions(doc)
+
+	return result, nil
+}
+
+// Generate smart CSS selector for an element
+func generateSmartSelector(s *goquery.Selection) string {
+	// Try ID first
+	if id, exists := s.Attr("id"); exists && id != "" {
+		return "#" + id
+	}
+
+	// Try name attribute
+	if name, exists := s.Attr("name"); exists && name != "" {
+		return "[name='" + name + "']"
+	}
+
+	// Try class if it's specific
+	if class, exists := s.Attr("class"); exists && class != "" {
+		classes := strings.Fields(class)
+		if len(classes) == 1 {
+			return "." + classes[0]
+		}
+	}
+
+	// Try role attribute
+	if role, exists := s.Attr("role"); exists && role != "" {
+		return "[role='" + role + "']"
+	}
+
+	// Fall back to tag name with type if available
+	tagName := goquery.NodeName(s)
+	if tagType, exists := s.Attr("type"); exists && tagType != "" {
+		return tagName + "[type='" + tagType + "']"
+	}
+
+	return tagName
+}
+
+// Determine the type of content on the page
+func determineContentType(doc *goquery.Document) string {
+	// Check for search pages
+	if doc.Find("input[type='search'], input[name='q'], [role='searchbox']").Length() > 0 {
+		return "search"
+	}
+
+	// Check for forms
+	if doc.Find("form").Length() > 0 {
+		return "form"
+	}
+
+	// Check for navigation
+	if doc.Find("nav, .navigation, .menu").Length() > 0 {
+		return "navigation"
+	}
+
+	return "general"
+}
+
+// Generate action suggestions based on page content
+func generateActionSuggestions(doc *goquery.Document) []string {
+	var suggestions []string
+
+	// Search suggestions
+	if doc.Find("input[type='search'], input[name='q']").Length() > 0 {
+		suggestions = append(suggestions, "Search for something")
+	}
+
+	// Link suggestions
+	linkCount := doc.Find("a[href]").Length()
+	if linkCount > 0 {
+		suggestions = append(suggestions, fmt.Sprintf("Click on one of %d links", linkCount))
+	}
+
+	// Button suggestions
+	buttonCount := doc.Find("button, input[type='submit'], input[type='button']").Length()
+	if buttonCount > 0 {
+		suggestions = append(suggestions, fmt.Sprintf("Click on one of %d buttons", buttonCount))
+	}
+
+	return suggestions
 }
 
 func main() {

@@ -4,6 +4,11 @@ console.log('Content script loaded on:', window.location.href);
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Content script received message:', message);
   
+  if (message.type === 'PING') {
+    sendResponse({ status: 'ready' });
+    return;
+  }
+  
   if (message.type === 'EXECUTE_COMMAND') {
     executeCommand(message.payload)
       .then(result => {
@@ -29,16 +34,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function executeCommand(command) {
   console.log('Executing command:', command);
+  console.log('Current URL:', window.location.href);
+  console.log('Document ready state:', document.readyState);
   
-  switch (command.action) {
-    case 'click':
-      return await executeClickCommand(command);
-    case 'input':
-      return await executeInputCommand(command);
-    case 'get_content':
-      return await executeGetContentCommand(command);
-    default:
-      throw new Error(`Unknown command action: ${command.action}`);
+  // Ensure document is ready
+  if (document.readyState === 'loading') {
+    await new Promise(resolve => {
+      document.addEventListener('DOMContentLoaded', resolve);
+    });
+  }
+  
+  try {
+    switch (command.action) {
+      case 'click':
+        return await executeClickCommand(command);
+      case 'input':
+        return await executeInputCommand(command);
+      case 'get_content':
+        return await executeGetContentCommand(command);
+      default:
+        throw new Error(`Unknown command action: ${command.action}`);
+    }
+  } catch (error) {
+    console.error('Command execution error:', error);
+    console.error('Command details:', command);
+    throw error;
   }
 }
 
@@ -72,14 +92,38 @@ async function executeClickCommand(command) {
 }
 
 async function executeInputCommand(command) {
+  console.log('Executing input command with selector:', command.selector);
+  console.log('Input text:', command.text);
+  
   if (!command.selector || !command.text) {
     throw new Error('Input command requires selector and text');
   }
 
+  // Debug: Show available input elements
+  const allInputs = document.querySelectorAll('input, textarea, [contenteditable]');
+  console.log('Available input elements:', allInputs.length);
+  allInputs.forEach((input, i) => {
+    console.log(`Input ${i}:`, {
+      tag: input.tagName,
+      type: input.type || 'none',
+      id: input.id || 'none',
+      name: input.name || 'none',
+      placeholder: input.placeholder || 'none',
+      className: input.className || 'none'
+    });
+  });
+
   const element = findElement(command.selector);
   if (!element) {
-    throw new Error(`Input element not found: ${command.selector}`);
+    throw new Error(`Input element not found with selector: ${command.selector}. Found ${allInputs.length} total input elements.`);
   }
+  
+  console.log('Found input element:', {
+    tag: element.tagName,
+    type: element.type,
+    id: element.id,
+    name: element.name
+  });
 
   // Wait for element to be ready
   await waitForElementReady(element);
@@ -111,8 +155,23 @@ async function executeInputCommand(command) {
 async function executeGetContentCommand(command) {
   const content = getPageContent();
   
+  // Send content to backend for analysis if requested
+  if (command.analyze) {
+    // This would be handled by the background script
+    chrome.runtime.sendMessage({
+      type: 'PAGE_CONTENT',
+      payload: content
+    });
+  }
+  
   return {
     details: 'Retrieved page content',
+    elementsFound: {
+      inputs: document.querySelectorAll('input').length,
+      buttons: document.querySelectorAll('button').length,
+      links: document.querySelectorAll('a[href]').length,
+      forms: document.querySelectorAll('form').length
+    },
     ...content
   };
 }
@@ -133,13 +192,34 @@ function findElement(selector) {
         '#search',
         '#q',
         '.search-input',
-        '[role="searchbox"]'
+        '[role="searchbox"]',
+        'input[placeholder*="search" i]',
+        'input[placeholder*="find" i]'
       ];
       
       for (const searchSelector of searchSelectors) {
         element = document.querySelector(searchSelector);
-        if (element) {
+        if (element && isElementInteractable(element)) {
           console.log(`Found element with fallback selector: ${searchSelector}`);
+          return element;
+        }
+      }
+    }
+    
+    // Try button fallbacks
+    if (selector.includes('button') || selector.includes('click')) {
+      const buttonSelectors = [
+        'button',
+        'input[type="submit"]',
+        'input[type="button"]',
+        '[role="button"]',
+        'a[href]'
+      ];
+      
+      for (const btnSelector of buttonSelectors) {
+        element = document.querySelector(btnSelector);
+        if (element && isElementInteractable(element)) {
+          console.log(`Found element with button fallback: ${btnSelector}`);
           return element;
         }
       }
@@ -152,14 +232,101 @@ function findElement(selector) {
   }
 }
 
+// Check if element is actually interactable
+function isElementInteractable(element) {
+  if (!element) return false;
+  
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  
+  return (
+    rect.width > 0 &&
+    rect.height > 0 &&
+    style.display !== 'none' &&
+    style.visibility !== 'hidden' &&
+    !element.disabled &&
+    element.offsetParent !== null
+  );
+}
+
 function getPageContent() {
+  // Get interactive elements for better analysis
+  const interactiveElements = [];
+  
+  // Find all potentially interactive elements
+  document.querySelectorAll('input, button, a[href], select, textarea').forEach((el, index) => {
+    const rect = el.getBoundingClientRect();
+    const isVisible = rect.width > 0 && rect.height > 0 && 
+                     window.getComputedStyle(el).display !== 'none';
+    
+    if (isVisible) {
+      interactiveElements.push({
+        tag: el.tagName.toLowerCase(),
+        type: el.type || '',
+        id: el.id || '',
+        name: el.name || '',
+        className: el.className || '',
+        text: el.textContent?.trim().substring(0, 100) || '',
+        href: el.href || '',
+        selector: generateElementSelector(el)
+      });
+    }
+  });
+  
   return {
-    html: document.body.innerHTML,
+    html: document.documentElement.outerHTML,
     title: document.title,
     url: window.location.href,
-    text: document.body.innerText?.substring(0, 5000) || '', // Limit text size
-    readyState: document.readyState
+    text: document.body.innerText?.substring(0, 5000) || '',
+    readyState: document.readyState,
+    interactiveElements: interactiveElements,
+    metadata: {
+      hasSearchBox: !!document.querySelector('input[type="search"], input[name="q"], [role="searchbox"]'),
+      hasForms: document.querySelectorAll('form').length > 0,
+      hasNavigation: !!document.querySelector('nav, .navigation, .navbar'),
+      domain: window.location.hostname
+    }
   };
+}
+
+// Generate a reliable selector for an element
+function generateElementSelector(element) {
+  // Try ID first
+  if (element.id) {
+    return '#' + element.id;
+  }
+  
+  // Try name attribute
+  if (element.name) {
+    return `[name="${element.name}"]`;
+  }
+  
+  // Try role attribute
+  if (element.getAttribute('role')) {
+    return `[role="${element.getAttribute('role')}"]`;
+  }
+  
+  // Try unique class
+  if (element.className && typeof element.className === 'string') {
+    const classes = element.className.split(' ').filter(c => c.length > 0);
+    if (classes.length === 1) {
+      return '.' + classes[0];
+    }
+  }
+  
+  // Try type for inputs
+  if (element.tagName.toLowerCase() === 'input' && element.type) {
+    return `input[type="${element.type}"]`;
+  }
+  
+  // Fall back to tag name with position
+  const siblings = Array.from(element.parentNode.children).filter(el => el.tagName === element.tagName);
+  if (siblings.length === 1) {
+    return element.tagName.toLowerCase();
+  } else {
+    const index = siblings.indexOf(element) + 1;
+    return `${element.tagName.toLowerCase()}:nth-of-type(${index})`;
+  }
 }
 
 async function waitForElementReady(element, timeout = 5000) {
@@ -224,6 +391,8 @@ window.cortexDebug = {
   executeCommand,
   findElement,
   getPageContent,
+  generateElementSelector,
+  isElementInteractable,
   typeText,
   sleep
 };
