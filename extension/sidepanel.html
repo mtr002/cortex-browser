@@ -213,6 +213,89 @@
             50% { opacity: 0.5; }
         }
 
+        /* Execution feedback styles */
+        .execution-feedback {
+            width: 100%;
+            max-width: 100%;
+            background: rgba(17, 24, 39, 0.6);
+            border: 1px solid rgba(59, 130, 246, 0.2);
+            border-radius: 16px;
+            padding: 16px;
+            margin: 20px 0;
+        }
+        
+        .feedback-header h3 {
+            margin: 0 0 12px 0;
+            font-size: 14px;
+            font-weight: 500;
+            color: #3b82f6;
+        }
+        
+        .feedback-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(59, 130, 246, 0.1);
+            font-size: 13px;
+            color: #d1d5db;
+        }
+        
+        .feedback-item:last-child {
+            border-bottom: none;
+        }
+        
+        .feedback-icon {
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .feedback-icon.success {
+            color: #22c55e;
+        }
+        
+        .feedback-icon.error {
+            color: #ef4444;
+        }
+        
+        .feedback-icon.executing {
+            color: #f59e0b;
+        }
+        
+        .feedback-text {
+            flex: 1;
+        }
+        
+        .feedback-details {
+            font-size: 11px;
+            color: #6b7280;
+            margin-top: 2px;
+        }
+        
+        .page-analysis {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 8px 0;
+        }
+        
+        .page-analysis-title {
+            font-size: 12px;
+            font-weight: 500;
+            color: #3b82f6;
+            margin-bottom: 8px;
+        }
+        
+        .page-analysis-item {
+            font-size: 11px;
+            color: #d1d5db;
+            margin: 2px 0;
+        }
+
         /* Responsive design */
         @media (max-width: 400px) {
             .input-container {
@@ -226,6 +309,10 @@
             .content-area {
                 padding: 20px 16px;
             }
+            
+            .execution-feedback {
+                margin: 16px 0;
+            }
         }
     </style>
 </head>
@@ -237,8 +324,18 @@
         </div>
 
         <div class="content-area">
-            <div class="welcome-message">
+            <div class="welcome-message" id="welcomeMessage">
                 <p>How can I help you browse the web today?</p>
+            </div>
+            
+            <!-- Execution Feedback Area -->
+            <div class="execution-feedback" id="executionFeedback" style="display: none;">
+                <div class="feedback-header">
+                    <h3>Execution Progress</h3>
+                </div>
+                <div class="feedback-content" id="feedbackContent">
+                    <!-- Dynamic content will be added here -->
+                </div>
             </div>
         </div>
 
