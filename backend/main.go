@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -29,6 +30,32 @@ type CommandPayload struct {
 	URL      string `json:"url,omitempty"`
 	Selector string `json:"selector,omitempty"`
 	Text     string `json:"text,omitempty"`
+}
+
+// Multi-step task planning structures
+type CommandSequence struct {
+	Commands []CommandPayload `json:"commands"`
+	TaskID   string           `json:"taskId"`
+	Total    int              `json:"total"`
+	Current  int              `json:"current"`
+}
+
+type TaskState struct {
+	TaskID      string          `json:"taskId"`
+	Goal        string          `json:"goal"`
+	Sequence    CommandSequence `json:"sequence"`
+	Status      string          `json:"status"` // "pending", "executing", "completed", "failed"
+	CurrentStep int             `json:"currentStep"`
+	Results     []CommandResult `json:"results"`
+}
+
+type CommandResult struct {
+	Step      int    `json:"step"`
+	Action    string `json:"action"`
+	Success   bool   `json:"success"`
+	Details   string `json:"details,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Timestamp string `json:"timestamp"`
 }
 
 type PageContentPayload struct {
@@ -62,6 +89,10 @@ var upgrader = websocket.Upgrader{
 		return true
 	},
 }
+
+// Task state management
+var activeTasks = make(map[string]*TaskState)
+var taskCounter int64
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -112,6 +143,8 @@ func handleMessageWithConnection(conn *websocket.Conn, messageBytes []byte) erro
 		return handleExecuteTaskWithCompletion(conn, msg.Payload)
 	case "PAGE_CONTENT":
 		return handlePageContent(conn, msg.Payload)
+	case "COMMAND_COMPLETE":
+		return handleCommandComplete(conn, msg.Payload)
 	default:
 		log.Printf("Unknown message type: %s", msg.Type)
 		return sendMessage(conn, &Message{
@@ -127,6 +160,81 @@ func handleMessageWithConnection(conn *websocket.Conn, messageBytes []byte) erro
 func handleHandshake(payload interface{}) *Message {
 	log.Println("Handshake received from extension")
 	return nil // No response needed for handshake
+}
+
+// Handle command completion and advance sequence
+func handleCommandComplete(conn *websocket.Conn, payload interface{}) error {
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	var result CommandResult
+	if err := json.Unmarshal(payloadBytes, &result); err != nil {
+		log.Printf("Failed to parse command result: %v", err)
+		return nil
+	}
+
+	// Find the task by checking active tasks
+	// In a real implementation, we'd use taskID from result
+	var taskState *TaskState
+	for _, task := range activeTasks {
+		if task.Status == "executing" {
+			taskState = task
+			break
+		}
+	}
+
+	if taskState == nil {
+		log.Println("No active task found for command completion")
+		return nil
+	}
+
+	// Update task state
+	taskState.CurrentStep++
+	taskState.Results = append(taskState.Results, result)
+
+	// Check if more commands remain
+	if taskState.CurrentStep < len(taskState.Sequence.Commands) {
+		// Send next command
+		nextCommand := taskState.Sequence.Commands[taskState.CurrentStep]
+		taskState.Sequence.Current = taskState.CurrentStep
+
+		// Update sequence progress
+		if err := sendMessage(conn, &Message{
+			Type:    "COMMAND_SEQUENCE_UPDATE",
+			Payload: taskState.Sequence,
+		}); err != nil {
+			return err
+		}
+
+		// Wait a bit before next command (especially after navigation)
+		if taskState.CurrentStep > 0 {
+			prevCommand := taskState.Sequence.Commands[taskState.CurrentStep-1]
+			if prevCommand.Action == "navigate" {
+				time.Sleep(2 * time.Second)
+			} else {
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+
+		// Send next command
+		return sendMessage(conn, &Message{
+			Type:    "COMMAND",
+			Payload: nextCommand,
+		})
+	} else {
+		// All commands completed
+		taskState.Status = "completed"
+		delete(activeTasks, taskState.TaskID)
+
+		return sendMessage(conn, &Message{
+			Type: "TASK_COMPLETE",
+			Payload: TaskCompletePayload{
+				Message: fmt.Sprintf("Successfully completed multi-step task: %s", taskState.Goal),
+			},
+		})
+	}
 }
 
 // Task completion handling functions
@@ -157,9 +265,9 @@ func handleExecuteTaskWithCompletion(conn *websocket.Conn, payload interface{}) 
 
 	log.Printf("Processing goal: %s", taskPayload.Goal)
 
-	// Simple goal-to-command mapping
-	command := parseGoalToCommand(taskPayload.Goal)
-	if command == nil {
+	// Parse goal into command sequence (supports both single and multi-step)
+	sequence := parseGoalToSequence(taskPayload.Goal)
+	if sequence == nil || len(sequence.Commands) == 0 {
 		return sendMessage(conn, &Message{
 			Type: "ERROR",
 			Payload: ErrorPayload{
@@ -169,32 +277,65 @@ func handleExecuteTaskWithCompletion(conn *websocket.Conn, payload interface{}) 
 		})
 	}
 
-	// Send the command
-	if err := sendMessage(conn, &Message{
-		Type:    "COMMAND",
-		Payload: command,
-	}); err != nil {
-		return err
+	// Create task state
+	taskID := generateTaskID()
+	taskState := &TaskState{
+		TaskID:      taskID,
+		Goal:        taskPayload.Goal,
+		Sequence:    *sequence,
+		Status:      "pending",
+		CurrentStep: 0,
+		Results:     []CommandResult{},
 	}
+	activeTasks[taskID] = taskState
 
-	// Send completion message after a short delay to allow command execution
-	go func() {
-		// Wait for command to execute (adjust timing as needed)
-		if command.Action == "navigate" {
-			// Navigation takes longer
-			time.Sleep(2 * time.Second)
-		} else {
-			time.Sleep(1 * time.Second)
+	// If single command, send it directly (backward compatible)
+	if len(sequence.Commands) == 1 {
+		command := sequence.Commands[0]
+		if err := sendMessage(conn, &Message{
+			Type:    "COMMAND",
+			Payload: command,
+		}); err != nil {
+			return err
 		}
 
-		// Send task completion
-		sendMessage(conn, &Message{
-			Type: "TASK_COMPLETE",
-			Payload: TaskCompletePayload{
-				Message: fmt.Sprintf("Successfully executed: %s", taskPayload.Goal),
-			},
-		})
-	}()
+		// Send completion after delay
+		go func() {
+			if command.Action == "navigate" {
+				time.Sleep(2 * time.Second)
+			} else {
+				time.Sleep(1 * time.Second)
+			}
+			sendMessage(conn, &Message{
+				Type: "TASK_COMPLETE",
+				Payload: TaskCompletePayload{
+					Message: fmt.Sprintf("Successfully executed: %s", taskPayload.Goal),
+				},
+			})
+		}()
+	} else {
+		// Multi-step sequence - send sequence info and first command
+		taskState.Status = "executing"
+		sequence.TaskID = taskID
+		sequence.Current = 0
+		sequence.Total = len(sequence.Commands)
+
+		// Send sequence start notification
+		if err := sendMessage(conn, &Message{
+			Type:    "COMMAND_SEQUENCE",
+			Payload: sequence,
+		}); err != nil {
+			return err
+		}
+
+		// Send first command
+		if err := sendMessage(conn, &Message{
+			Type:    "COMMAND",
+			Payload: sequence.Commands[0],
+		}); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -215,7 +356,76 @@ func sendMessage(conn *websocket.Conn, message *Message) error {
 	return nil
 }
 
-func parseGoalToCommand(goal string) *CommandPayload {
+// Generate unique task ID
+func generateTaskID() string {
+	counter := atomic.AddInt64(&taskCounter, 1)
+	return fmt.Sprintf("task_%d_%d", time.Now().Unix(), counter)
+}
+
+// Parse goal into command sequence (supports multi-step)
+func parseGoalToSequence(goal string) *CommandSequence {
+	goal = strings.ToLower(strings.TrimSpace(goal))
+	log.Printf("Parsing goal to sequence: %s", goal)
+
+	commands := []CommandPayload{}
+
+	// Check for multi-step patterns
+	// Pattern 1: "Navigate to X and search for Y"
+	if strings.Contains(goal, " and ") || strings.Contains(goal, ", then ") || strings.Contains(goal, " then ") {
+		commands = parseMultiStepGoal(goal)
+	} else {
+		// Single command - parse as before
+		command := parseSingleCommand(goal)
+		if command != nil {
+			commands = []CommandPayload{*command}
+		}
+	}
+
+	if len(commands) == 0 {
+		return nil
+	}
+
+	return &CommandSequence{
+		Commands: commands,
+		Total:    len(commands),
+		Current:  0,
+	}
+}
+
+// Parse multi-step goals
+func parseMultiStepGoal(goal string) []CommandPayload {
+	commands := []CommandPayload{}
+
+	// Split by common conjunctions
+	parts := regexp.MustCompile(`\s+(and|then|, then|, and)\s+`).Split(goal, -1)
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		command := parseSingleCommand(part)
+		if command != nil {
+			commands = append(commands, *command)
+
+			// If it's a search/input command, automatically add a click on search button
+			if command.Action == "input" && containsSearchKeywords(part) {
+				// Add click command for search button
+				searchButtonCommand := &CommandPayload{
+					Action:   "click",
+					Selector: "input[type='submit'], button[type='submit'], button[name='btnK'], button[name='btnG'], [aria-label*='Search' i], [value*='Search' i]",
+				}
+				commands = append(commands, *searchButtonCommand)
+			}
+		}
+	}
+
+	return commands
+}
+
+// Parse single command (original parseGoalToCommand logic)
+func parseSingleCommand(goal string) *CommandPayload {
 	goal = strings.ToLower(strings.TrimSpace(goal))
 	log.Printf("Parsing goal: %s", goal)
 
@@ -235,10 +445,12 @@ func parseGoalToCommand(goal string) *CommandPayload {
 	}
 
 	// Handle search commands
+	// Note: For multi-step goals, the click will be added in parseMultiStepGoal
+	// For single commands, we'll let the content script handle it or user can explicitly click
 	if containsSearchKeywords(goal) {
 		return &CommandPayload{
 			Action:   "input",
-			Selector: "input[type='search'], input[name='q'], #search, [role='searchbox']",
+			Selector: "input[name='q'], textarea[name='q'], input[type='search'], input[type='text'][name='q'], #search, [role='searchbox']",
 			Text:     extractSearchTermFromGoal(goal),
 		}
 	}

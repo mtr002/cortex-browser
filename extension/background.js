@@ -7,6 +7,7 @@ let isConnected = false;
 
 // Active tasks tracking
 let activeTasks = new Map();
+let currentSequence = null;
 
 // Initialize
 connectWebSocket();
@@ -91,6 +92,12 @@ function handleBackendMessage(message) {
     case 'COMMAND':
       executeCommand(message.payload);
       break;
+    case 'COMMAND_SEQUENCE':
+      handleCommandSequence(message.payload);
+      break;
+    case 'COMMAND_SEQUENCE_UPDATE':
+      handleSequenceUpdate(message.payload);
+      break;
     case 'TASK_COMPLETE':
       handleTaskComplete(message.payload);
       break;
@@ -136,6 +143,20 @@ async function executeCommand(command) {
       elementsFound: result?.elementsFound || null
     });
 
+    // Send command completion to backend (for multi-step sequences)
+    if (currentSequence) {
+      sendToBackend({
+        type: 'COMMAND_COMPLETE',
+        payload: {
+          step: currentSequence.current || 0,
+          action: command.action,
+          success: true,
+          details: result?.details || 'Command executed successfully',
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
+
   } catch (error) {
     console.error('Command execution failed:', error);
     
@@ -144,6 +165,20 @@ async function executeCommand(command) {
       action: command.action,
       error: error.message
     });
+
+    // Send failure to backend
+    if (currentSequence) {
+      sendToBackend({
+        type: 'COMMAND_COMPLETE',
+        payload: {
+          step: currentSequence.current || 0,
+          action: command.action,
+          success: false,
+          error: error.message,
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
   }
 }
 
@@ -219,6 +254,18 @@ function handleBackendError(payload) {
 function handleContentAnalysis(payload) {
   console.log('Content analysis received:', payload);
   notifySidepanel('CONTENT_ANALYSIS', payload);
+}
+
+function handleCommandSequence(sequence) {
+  console.log('Command sequence received:', sequence);
+  currentSequence = sequence;
+  notifySidepanel('SEQUENCE_STARTED', sequence);
+}
+
+function handleSequenceUpdate(sequence) {
+  console.log('Sequence update received:', sequence);
+  currentSequence = sequence;
+  notifySidepanel('SEQUENCE_UPDATE', sequence);
 }
 
 function notifyConnectionStatus(status, message) {

@@ -67,8 +67,39 @@ async function executeClickCommand(command) {
     throw new Error('Click command requires selector');
   }
 
+  // Special handling for search button selectors - try multiple strategies
+  if (command.selector.includes('Search') || command.selector.includes('submit') || command.selector.includes('btn')) {
+    const element = findSearchButton(command.selector);
+    if (element) {
+      await waitForElementReady(element);
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await sleep(500);
+      element.click();
+      return {
+        details: `Clicked search button: ${element.tagName} ${element.name || element.value || element.textContent?.substring(0, 20)}`,
+        elementText: element.textContent?.trim().substring(0, 50) || element.value || '',
+        elementTag: element.tagName.toLowerCase()
+      };
+    }
+  }
+
   const element = findElement(command.selector);
   if (!element) {
+    // If it's a search button and we can't find it, try pressing Enter on the search input as fallback
+    if (command.selector.includes('Search') || command.selector.includes('submit')) {
+      const searchInput = document.querySelector('input[name="q"], textarea[name="q"], input[type="search"]');
+      if (searchInput) {
+        console.log('Search button not found, pressing Enter on search input instead');
+        searchInput.focus();
+        searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+        searchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+        return {
+          details: 'Pressed Enter on search input (button not found)',
+          elementText: '',
+          elementTag: 'keyboard'
+        };
+      }
+    }
     throw new Error(`Element not found: ${command.selector}`);
   }
 
@@ -86,9 +117,63 @@ async function executeClickCommand(command) {
   
   return {
     details: `Clicked element: ${command.selector}`,
-    elementText: element.textContent?.trim().substring(0, 50) || '',
+    elementText: element.textContent?.trim().substring(0, 50) || element.value || '',
     elementTag: element.tagName.toLowerCase()
   };
+}
+
+// Find search button with multiple fallback strategies
+function findSearchButton(selector) {
+  // Try comma-separated selectors
+  if (selector.includes(',')) {
+    const selectors = selector.split(',').map(s => s.trim());
+    for (const sel of selectors) {
+      const element = document.querySelector(sel);
+      if (element && isElementInteractable(element)) {
+        return element;
+      }
+    }
+  }
+  
+  // Try exact selector
+  let element = document.querySelector(selector);
+  if (element && isElementInteractable(element)) {
+    return element;
+  }
+  
+  // Google-specific search button selectors
+  const googleSelectors = [
+    'input[type="submit"][name="btnK"]',  // Google Search button
+    'input[type="submit"][name="btnG"]',  // Google Search button (alternative)
+    'input[value="Google Search"]',
+    'input[value="Search"]',
+    'button[type="submit"]',
+    'input[type="submit"]',
+    '[aria-label*="Search" i]',
+    '[aria-label="Search"]',
+    'button[name="btnK"]',
+    'button[name="btnG"]'
+  ];
+  
+  for (const sel of googleSelectors) {
+    element = document.querySelector(sel);
+    if (element && isElementInteractable(element)) {
+      console.log(`Found search button with selector: ${sel}`);
+      return element;
+    }
+  }
+  
+  // Try to find submit button in the same form as search input
+  const searchInput = document.querySelector('input[name="q"], textarea[name="q"], input[type="search"]');
+  if (searchInput && searchInput.form) {
+    const submitButton = searchInput.form.querySelector('input[type="submit"], button[type="submit"]');
+    if (submitButton && isElementInteractable(submitButton)) {
+      console.log('Found submit button in search form');
+      return submitButton;
+    }
+  }
+  
+  return null;
 }
 
 async function executeInputCommand(command) {
@@ -109,7 +194,8 @@ async function executeInputCommand(command) {
       id: input.id || 'none',
       name: input.name || 'none',
       placeholder: input.placeholder || 'none',
-      className: input.className || 'none'
+      className: input.className || 'none',
+      visible: isElementInteractable(input)
     });
   });
 
@@ -178,15 +264,34 @@ async function executeGetContentCommand(command) {
 
 function findElement(selector) {
   try {
+    // Handle comma-separated selectors (try each one individually)
+    if (selector.includes(',')) {
+      const selectors = selector.split(',').map(s => s.trim());
+      console.log('Trying multiple selectors:', selectors);
+      
+      for (const sel of selectors) {
+        const element = document.querySelector(sel);
+        if (element && isElementInteractable(element)) {
+          console.log(`Found element with selector: ${sel}`);
+          return element;
+        }
+      }
+    }
+    
     // First try exact selector
     let element = document.querySelector(selector);
-    if (element) return element;
+    if (element && isElementInteractable(element)) {
+      return element;
+    }
     
     // Try common search input selectors if original fails
-    if (selector.includes('search') || selector.includes('input')) {
+    if (selector.includes('search') || selector.includes('input') || selector.includes('q')) {
       const searchSelectors = [
+        'input[name="q"]',  // Google's main search box
+        'textarea[name="q"]',  // Google sometimes uses textarea
         'input[type="search"]',
-        'input[name="q"]',
+        'input[type="text"][name="q"]',
+        'textarea[type="text"][name="q"]',
         'input[name="query"]',
         'input[name="search"]',
         '#search',
@@ -194,7 +299,11 @@ function findElement(selector) {
         '.search-input',
         '[role="searchbox"]',
         'input[placeholder*="search" i]',
-        'input[placeholder*="find" i]'
+        'input[placeholder*="Search" i]',
+        'textarea[placeholder*="search" i]',
+        'textarea[placeholder*="Search" i]',
+        'input[aria-label*="Search" i]',
+        'textarea[aria-label*="Search" i]'
       ];
       
       for (const searchSelector of searchSelectors) {
@@ -202,6 +311,21 @@ function findElement(selector) {
         if (element && isElementInteractable(element)) {
           console.log(`Found element with fallback selector: ${searchSelector}`);
           return element;
+        }
+      }
+      
+      // Last resort: find any visible text input that might be a search box
+      const allInputs = document.querySelectorAll('input[type="text"], input[type="search"], textarea');
+      for (const input of allInputs) {
+        if (isElementInteractable(input)) {
+          const placeholder = (input.placeholder || '').toLowerCase();
+          const name = (input.name || '').toLowerCase();
+          const id = (input.id || '').toLowerCase();
+          
+          if (placeholder.includes('search') || name.includes('search') || name === 'q' || id.includes('search')) {
+            console.log(`Found search input by content analysis: ${input.tagName} ${input.name || input.id || input.placeholder}`);
+            return input;
+          }
         }
       }
     }

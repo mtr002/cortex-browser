@@ -11,6 +11,7 @@ const feedbackContent = document.getElementById('feedbackContent');
 // State
 let isConnected = false;
 let isExecuting = false;
+let currentSequence = null;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -165,6 +166,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             handleContentAnalysisResult(message.payload);
             break;
             
+        case 'SEQUENCE_STARTED':
+            handleSequenceStarted(message.payload);
+            break;
+            
+        case 'SEQUENCE_UPDATE':
+            handleSequenceUpdate(message.payload);
+            break;
+            
         case 'CONNECTION_STATUS':
             updateConnectionStatus(message.payload.status, message.payload.message);
             break;
@@ -240,6 +249,87 @@ function handleContentAnalysisResult(analysis) {
 function clearFeedback() {
     feedbackContent.innerHTML = '';
     hideExecutionFeedback();
+    currentSequence = null;
+}
+
+function handleSequenceStarted(sequence) {
+    console.log('Sequence started:', sequence);
+    currentSequence = sequence;
+    showExecutionFeedback();
+    
+    // Create timeline visualization
+    const timelineDiv = document.createElement('div');
+    timelineDiv.className = 'sequence-timeline';
+    timelineDiv.id = 'sequenceTimeline';
+    
+    let timelineHTML = '<div class="timeline-header">📋 Multi-Step Task</div>';
+    timelineHTML += '<div class="timeline-steps">';
+    
+    sequence.commands.forEach((cmd, index) => {
+        const stepClass = index === 0 ? 'active' : 'pending';
+        timelineHTML += `
+            <div class="timeline-step ${stepClass}" data-step="${index}">
+                <div class="step-number">${index + 1}</div>
+                <div class="step-content">
+                    <div class="step-action">${getActionLabel(cmd.action)}</div>
+                    <div class="step-details">${getStepDetails(cmd)}</div>
+                </div>
+            </div>
+        `;
+    });
+    
+    timelineHTML += '</div>';
+    timelineDiv.innerHTML = timelineHTML;
+    
+    // Clear existing feedback and add timeline
+    feedbackContent.innerHTML = '';
+    feedbackContent.appendChild(timelineDiv);
+}
+
+function handleSequenceUpdate(sequence) {
+    console.log('Sequence update:', sequence);
+    currentSequence = sequence;
+    
+    const timeline = document.getElementById('sequenceTimeline');
+    if (!timeline) return;
+    
+    // Update step states
+    const steps = timeline.querySelectorAll('.timeline-step');
+    steps.forEach((step, index) => {
+        const stepNum = parseInt(step.dataset.step);
+        step.classList.remove('active', 'completed', 'pending');
+        
+        if (stepNum < sequence.current) {
+            step.classList.add('completed');
+        } else if (stepNum === sequence.current) {
+            step.classList.add('active');
+        } else {
+            step.classList.add('pending');
+        }
+    });
+}
+
+function getActionLabel(action) {
+    const labels = {
+        'navigate': '🌐 Navigate',
+        'input': '⌨️ Input',
+        'click': '👆 Click',
+        'get_content': '📄 Get Content'
+    };
+    return labels[action] || action;
+}
+
+function getStepDetails(command) {
+    if (command.action === 'navigate') {
+        return command.url || 'Navigate to URL';
+    } else if (command.action === 'input') {
+        return `Type: "${command.text || ''}"`;
+    } else if (command.action === 'click') {
+        return `Click: ${command.selector || 'element'}`;
+    } else if (command.action === 'get_content') {
+        return 'Extract page content';
+    }
+    return '';
 }
 
 // Export for debugging
