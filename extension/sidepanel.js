@@ -102,6 +102,12 @@ function setupTextareaResize() {
     goalInput.addEventListener('input', () => {
         goalInput.style.height = 'auto';
         goalInput.style.height = Math.min(goalInput.scrollHeight, 120) + 'px';
+        goalInput.style.overflow = 'hidden';
+    });
+    
+    goalInput.addEventListener('scroll', (e) => {
+        e.preventDefault();
+        goalInput.scrollTop = 0;
     });
 }
 
@@ -159,7 +165,7 @@ function handleSubmitGoal() {
 
     setExecutionState(true);
     showExecutionFeedback();
-    addFeedbackItem('', 'Sending goal to backend...', goal, 'executing');
+    updateStatus('Processing...');
 
     // Send goal to background script
     const message = {
@@ -170,15 +176,15 @@ function handleSubmitGoal() {
     chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
             console.error('Failed to send goal:', chrome.runtime.lastError.message);
-            addFeedbackItem('', 'Failed to send goal', chrome.runtime.lastError.message, 'error');
+            updateStatus('Failed to send goal');
             setExecutionState(false);
             return;
         }
 
         if (response?.status === 'sent') {
-            addFeedbackItem('', 'Goal sent to backend', 'Waiting for command...', 'success');
+            updateStatus('Starting...');
         } else {
-            addFeedbackItem('', 'Failed to send goal to backend', response?.message || 'Unknown error', 'error');
+            updateStatus('Failed to start');
             setExecutionState(false);
         }
     });
@@ -209,32 +215,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
         case 'COMMAND_EXECUTED':
             console.log('Command executed:', message.payload);
-            const action = message.payload.action;
-            const details = message.payload.details;
-            const elementsFound = message.payload.elementsFound;
-            
-            addFeedbackItem('', `Executed: ${action}`, details, 'success');
-            
-            if (elementsFound) {
-                const elementSummary = `Found ${elementsFound.inputs} inputs, ${elementsFound.buttons} buttons, ${elementsFound.links} links`;
-                addFeedbackItem('', 'Page Analysis', elementSummary, 'success');
+            if (!currentSequence) {
+                const action = message.payload.action;
+                if (action === 'navigate') {
+                    updateStatus('Navigating...');
+                } else if (action === 'input') {
+                    updateStatus('Typing...');
+                } else if (action === 'click') {
+                    updateStatus('Clicking...');
+                }
             }
             break;
             
         case 'COMMAND_FAILED':
             console.error('Command failed:', message.payload);
-            addFeedbackItem('', `Failed: ${message.payload.action}`, message.payload.error, 'error');
+            updateStatus('Failed');
             setExecutionState(false);
             break;
             
         case 'EXECUTION_COMPLETE':
             console.log('Execution complete:', message.payload);
-            addFeedbackItem('', 'Task Completed', message.payload.message || 'Task finished successfully', 'success');
-            setExecutionState(false);
+            updateStatus('Complete');
+            setTimeout(() => {
+                setExecutionState(false);
+                hideExecutionFeedback();
+            }, 1000);
             break;
             
         case 'CONTENT_ANALYSIS':
-            handleContentAnalysisResult(message.payload);
             break;
             
         case 'SEQUENCE_STARTED':
@@ -286,37 +294,6 @@ function addFeedbackItem(icon, title, details, type = 'info') {
     feedbackContent.scrollTop = feedbackContent.scrollHeight;
 }
 
-function handleContentAnalysisResult(analysis) {
-    console.log('Content analysis result:', analysis);
-    
-    // Create analysis display
-    const analysisDiv = document.createElement('div');
-    analysisDiv.className = 'page-analysis';
-    
-    let analysisHTML = '<div class="page-analysis-title">Page Analysis</div>';
-    
-    if (analysis.contentType) {
-        analysisHTML += `<div class="page-analysis-item">Type: ${analysis.contentType}</div>`;
-    }
-    
-    if (analysis.selectors && analysis.selectors.length > 0) {
-        analysisHTML += `<div class="page-analysis-item">Interactive elements: ${analysis.selectors.length}</div>`;
-    }
-    
-    if (analysis.suggestions && analysis.suggestions.length > 0) {
-        analysisHTML += `<div class="page-analysis-item">Suggestions:</div>`;
-        analysis.suggestions.forEach(suggestion => {
-            analysisHTML += `<div class="page-analysis-item">• ${suggestion}</div>`;
-        });
-    }
-    
-    analysisDiv.innerHTML = analysisHTML;
-    feedbackContent.appendChild(analysisDiv);
-    
-    // Auto-scroll to bottom
-    feedbackContent.scrollTop = feedbackContent.scrollHeight;
-}
-
 function clearFeedback() {
     feedbackContent.innerHTML = '';
     hideExecutionFeedback();
@@ -327,80 +304,47 @@ function handleSequenceStarted(sequence) {
     console.log('Sequence started:', sequence);
     currentSequence = sequence;
     showExecutionFeedback();
-    
-    // Create timeline visualization
-    const timelineDiv = document.createElement('div');
-    timelineDiv.className = 'sequence-timeline';
-    timelineDiv.id = 'sequenceTimeline';
-    
-    let timelineHTML = '<div class="timeline-header">Multi-Step Task</div>';
-    timelineHTML += '<div class="timeline-steps">';
-    
-    sequence.commands.forEach((cmd, index) => {
-        const stepClass = index === 0 ? 'active' : 'pending';
-        timelineHTML += `
-            <div class="timeline-step ${stepClass}" data-step="${index}">
-                <div class="step-number">${index + 1}</div>
-                <div class="step-content">
-                    <div class="step-action">${getActionLabel(cmd.action)}</div>
-                    <div class="step-details">${getStepDetails(cmd)}</div>
-                </div>
-            </div>
-        `;
-    });
-    
-    timelineHTML += '</div>';
-    timelineDiv.innerHTML = timelineHTML;
-    
-    // Clear existing feedback and add timeline
-    feedbackContent.innerHTML = '';
-    feedbackContent.appendChild(timelineDiv);
+    updateStatusFromCommand(sequence.commands[0]);
 }
 
 function handleSequenceUpdate(sequence) {
     console.log('Sequence update:', sequence);
     currentSequence = sequence;
     
-    const timeline = document.getElementById('sequenceTimeline');
-    if (!timeline) return;
-    
-    // Update step states
-    const steps = timeline.querySelectorAll('.timeline-step');
-    steps.forEach((step, index) => {
-        const stepNum = parseInt(step.dataset.step);
-        step.classList.remove('active', 'completed', 'pending');
-        
-        if (stepNum < sequence.current) {
-            step.classList.add('completed');
-        } else if (stepNum === sequence.current) {
-            step.classList.add('active');
-        } else {
-            step.classList.add('pending');
-        }
-    });
-}
-
-function getActionLabel(action) {
-    const labels = {
-        'navigate': 'Navigate',
-        'input': 'Input',
-        'click': 'Click',
-        'get_content': 'Get Content'
-    };
-    return labels[action] || action;
-}
-
-function getStepDetails(command) {
-    if (command.action === 'navigate') {
-        return command.url || 'Navigate to URL';
-    } else if (command.action === 'input') {
-        return `Type: "${command.text || ''}"`;
-    } else if (command.action === 'click') {
-        return `Click: ${command.selector || 'element'}`;
-    } else if (command.action === 'get_content') {
-        return 'Extract page content';
+    if (sequence.commands && sequence.commands[sequence.current]) {
+        updateStatusFromCommand(sequence.commands[sequence.current]);
     }
-    return '';
+}
+
+function updateStatusFromCommand(command) {
+    if (!command) return;
+    
+    let status = '';
+    if (command.action === 'navigate') {
+        const url = command.url || '';
+        const domain = url.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+        status = domain || 'Navigating...';
+    } else if (command.action === 'input') {
+        status = `Typing: "${command.text || ''}"`;
+    } else if (command.action === 'click') {
+        status = 'Clicking...';
+    } else if (command.action === 'get_content') {
+        status = 'Loading...';
+    } else {
+        status = 'Processing...';
+    }
+    
+    updateStatus(status);
+}
+
+function updateStatus(status) {
+    if (!feedbackContent) return;
+    
+    feedbackContent.innerHTML = `
+        <div class="status-display">
+            <div class="status-text">${status}</div>
+        </div>
+    `;
 }
 
 // Voice Recognition Functions
