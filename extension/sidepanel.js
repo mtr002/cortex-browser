@@ -28,21 +28,37 @@ window.addEventListener('unhandledrejection', (event) => {
 const statusDot = document.getElementById('statusDot');
 const goalInput = document.getElementById('goalInput');
 const submitBtn = document.getElementById('submitBtn');
+let micBtn = null; // Will be set after DOM loads
 const welcomeMessage = document.getElementById('welcomeMessage');
 const executionFeedback = document.getElementById('executionFeedback');
 const feedbackContent = document.getElementById('feedbackContent');
+const voiceOverlay = document.getElementById('voiceOverlay');
+const voiceCircle = document.getElementById('voiceCircle');
+const voiceStatus = document.getElementById('voiceStatus');
 
 // State
 let isConnected = false;
 let isExecuting = false;
 let currentSequence = null;
 let connectionCheckInterval = null; // Store interval ID for cleanup
+let recognition = null;
+let isRecording = false;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+    // Get mic button after DOM is loaded
+    micBtn = document.getElementById('micBtn');
+    console.log('DOM loaded, micBtn:', micBtn);
+    
+    if (!micBtn) {
+        console.error('CRITICAL: Mic button not found!');
+    }
+    
     setupEventListeners();
     checkBackgroundConnection();
     setupTextareaResize();
+    initializeVoiceRecognition();
+    setupVoiceOverlayHandlers();
 });
 
 // Cleanup on page unload
@@ -56,6 +72,15 @@ window.addEventListener('beforeunload', () => {
 function setupEventListeners() {
     // Submit goal
     submitBtn.addEventListener('click', handleSubmitGoal);
+    
+    // Microphone button for voice input
+    if (micBtn) {
+        micBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleVoiceRecognition();
+        });
+    }
     
     // Handle Enter key (Shift+Enter for new line, Enter to submit)
     goalInput.addEventListener('keydown', (e) => {
@@ -376,6 +401,286 @@ function getStepDetails(command) {
         return 'Extract page content';
     }
     return '';
+}
+
+// Voice Recognition Functions
+function initializeVoiceRecognition() {
+    console.log('Initializing voice recognition...');
+    console.log('micBtn element:', micBtn);
+    
+    // Check if browser supports Web Speech API
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        console.log('Voice recognition not supported in this browser');
+        if (micBtn) {
+            micBtn.style.display = 'none'; // Hide mic button if not supported
+        }
+        return;
+    }
+
+    // Initialize Speech Recognition
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    console.log('SpeechRecognition class found:', SpeechRecognition);
+    recognition = new SpeechRecognition();
+    console.log('Recognition object created:', recognition);
+    
+    recognition.continuous = false; // Stop after user stops speaking
+    recognition.interimResults = false; // Only return final results
+    recognition.lang = 'en-US'; // Set language to English
+    console.log('Voice recognition initialized successfully');
+
+    // Handle recognition results
+    recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        console.log('Voice input:', transcript);
+        
+        // Update status
+        if (voiceStatus) {
+            voiceStatus.textContent = 'Processing...';
+            voiceStatus.className = 'voice-status processing';
+        }
+        
+        // Update input field with recognized text
+        if (goalInput) {
+            goalInput.value = transcript;
+            // Trigger input event to update submit button state
+            goalInput.dispatchEvent(new Event('input'));
+        }
+        
+        // Auto-submit the command
+        setTimeout(() => {
+            stopVoiceRecognition();
+            if (isConnected && !isExecuting && transcript.trim()) {
+                handleSubmitGoal();
+            }
+        }, 500); // Small delay to show "Processing..." status
+    };
+
+    // Handle errors
+    recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        
+        // Update status
+        if (voiceStatus) {
+            if (event.error === 'no-speech') {
+                voiceStatus.textContent = 'No speech detected. Try again.';
+            } else if (event.error === 'not-allowed') {
+                voiceStatus.textContent = 'Microphone permission denied';
+                // Show instructions
+                setTimeout(() => {
+                    showPermissionDeniedMessage();
+                }, 1500);
+            } else {
+                voiceStatus.textContent = 'Error: ' + event.error;
+            }
+            voiceStatus.className = 'voice-status';
+        }
+        
+        // Close overlay after showing error (except for permission denied which shows instructions)
+        if (event.error !== 'not-allowed') {
+            setTimeout(() => {
+                stopVoiceRecognition();
+            }, 2000);
+        }
+        
+        // Show user-friendly error message
+        if (event.error === 'no-speech') {
+            addFeedbackItem('🎤', 'No speech detected', 'Please try speaking again', 'error');
+        } else if (event.error === 'not-allowed') {
+            // Don't add feedback here, showPermissionDeniedMessage will handle it
+        } else {
+            addFeedbackItem('🎤', 'Voice recognition error', event.error, 'error');
+        }
+    };
+
+    // Handle when recognition ends
+    recognition.onend = () => {
+        if (isRecording) {
+            stopVoiceRecognition();
+        }
+    };
+}
+
+function toggleVoiceRecognition() {
+    console.log('toggleVoiceRecognition called, recognition:', recognition, 'isRecording:', isRecording);
+    
+    if (!recognition) {
+        console.error('Recognition not initialized');
+        addFeedbackItem('🎤', 'Voice recognition not available', 'Your browser does not support voice input', 'error');
+        return;
+    }
+
+    if (isRecording) {
+        console.log('Stopping recording...');
+        stopVoiceRecognition();
+    } else {
+        console.log('Starting recording...');
+        showVoiceOverlay();
+        
+        // Auto-start recording after showing overlay
+        // Speech Recognition API will handle permission prompt automatically
+        setTimeout(() => {
+            startVoiceRecognition();
+        }, 300);
+    }
+}
+
+function startVoiceRecognition() {
+    if (!recognition || isRecording) return;
+
+    try {
+        // Update status - Speech Recognition API will handle permission prompt
+        if (voiceStatus) {
+            voiceStatus.textContent = 'Starting...';
+            voiceStatus.className = 'voice-status';
+        }
+        
+        // Start speech recognition - this will trigger permission prompt if needed
+        recognition.start();
+        isRecording = true;
+        
+        // Update overlay UI
+        if (voiceCircle) {
+            voiceCircle.classList.add('recording');
+        }
+        if (voiceStatus) {
+            voiceStatus.textContent = 'Listening...';
+            voiceStatus.className = 'voice-status listening';
+        }
+        
+        console.log('Voice recognition started');
+    } catch (error) {
+        console.error('Failed to start voice recognition:', error);
+        if (error.message.includes('already started')) {
+            // Recognition is already running, just update UI
+            isRecording = true;
+            if (voiceCircle) {
+                voiceCircle.classList.add('recording');
+            }
+            if (voiceStatus) {
+                voiceStatus.textContent = 'Listening...';
+                voiceStatus.className = 'voice-status listening';
+            }
+        } else {
+            hideVoiceOverlay();
+            if (error.message.includes('not allowed') || error.message.includes('permission')) {
+                showPermissionDeniedMessage();
+            } else {
+                addFeedbackItem('🎤', 'Failed to start recording', error.message, 'error');
+            }
+        }
+    }
+}
+
+function stopVoiceRecognition() {
+    if (!recognition || !isRecording) {
+        hideVoiceOverlay();
+        return;
+    }
+
+    try {
+        recognition.stop();
+        isRecording = false;
+        
+        // Close overlay after a brief delay
+        setTimeout(() => {
+            hideVoiceOverlay();
+        }, 500);
+        
+        console.log('Voice recognition stopped');
+    } catch (error) {
+        console.error('Error stopping voice recognition:', error);
+        hideVoiceOverlay();
+    }
+}
+
+function showVoiceOverlay() {
+    if (voiceOverlay) {
+        voiceOverlay.classList.add('active');
+        if (voiceCircle) {
+            voiceCircle.classList.remove('recording');
+        }
+        if (voiceStatus) {
+            voiceStatus.textContent = 'Click to start recording';
+            voiceStatus.className = 'voice-status';
+        }
+    }
+}
+
+function hideVoiceOverlay() {
+    if (voiceOverlay) {
+        voiceOverlay.classList.remove('active');
+    }
+    if (voiceCircle) {
+        voiceCircle.classList.remove('recording');
+    }
+    isRecording = false;
+}
+
+function setupVoiceOverlayHandlers() {
+    // Click on circle to stop recording
+    if (voiceCircle) {
+        voiceCircle.addEventListener('click', () => {
+            if (isRecording) {
+                stopVoiceRecognition();
+            }
+        });
+    }
+    
+    // Click outside circle (on overlay) to close
+    if (voiceOverlay) {
+        voiceOverlay.addEventListener('click', (e) => {
+            if (e.target === voiceOverlay) {
+                stopVoiceRecognition();
+            }
+        });
+    }
+}
+
+function showPermissionDeniedMessage() {
+    hideVoiceOverlay();
+    
+    // Show detailed instructions
+    const instructions = `
+🎤 Microphone Permission Required
+
+To enable microphone access for this extension:
+
+Method 1 (Recommended):
+1. Look for the microphone permission prompt in your browser
+2. Click "Allow" when prompted
+3. If you clicked "Block", you'll need to reset it
+
+Method 2 (If already blocked):
+1. Click the extension icon in Chrome toolbar
+2. Click the three dots (⋮) → "Manage extension"
+3. Or go to: chrome://extensions/
+4. Find "Cortex Browser" extension
+5. Click "Details" → "Site settings"
+6. Find "Microphone" and set it to "Allow"
+7. Reload this sidepanel and try again
+
+Note: The browser will show a permission prompt when you click the mic button.
+    `;
+    
+    addFeedbackItem('🎤', 'Microphone Permission Denied', instructions, 'error');
+    
+    // Also show in the welcome message area
+    if (welcomeMessage) {
+        welcomeMessage.innerHTML = `
+            <div style="text-align: center; color: #ef4444; padding: 20px;">
+                <h3 style="margin: 0 0 10px 0;">🎤 Microphone Access Required</h3>
+                <p style="font-size: 14px; line-height: 1.6; color: #9ca3af; margin-bottom: 15px;">
+                    To use voice input, please enable microphone access.
+                </p>
+                <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 12px; text-align: left; font-size: 12px;">
+                    <strong>Quick Fix:</strong><br>
+                    1. Click the mic button again<br>
+                    2. When browser asks for permission, click "Allow"<br>
+                    3. If you already blocked it, go to chrome://extensions/ → find this extension → Site settings → Allow microphone
+                </div>
+            </div>
+        `;
+    }
 }
 
 // Export for debugging
