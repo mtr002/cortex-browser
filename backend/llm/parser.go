@@ -39,66 +39,65 @@ type CommandSequence struct {
 	Current  int
 }
 
-// ParseGoalWithLLM uses LLM to parse a user goal into command sequence
 func ParseGoalWithLLM(client *LLMClient, goal string, pageContext *PageContext) (*CommandSequence, error) {
-	// Build prompt
 	prompt := BuildGoalParsingPrompt(goal, pageContext)
 
-	log.Printf("🤖 LLM Parsing goal: %s", goal)
+	log.Printf("LLM Parsing goal: %s", goal)
 
-	// Get LLM response
 	response, err := client.Generate(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("LLM generation failed: %v", err)
 	}
 
-	log.Printf("🤖 LLM Response: %s", response)
+	log.Printf("LLM Response: %s", response)
 
-	// Extract JSON from response (might have extra text)
 	jsonStr := extractJSON(response)
 	if jsonStr == "" {
 		return nil, fmt.Errorf("no valid JSON found in LLM response")
 	}
 
-	// Parse JSON
 	var parsedGoal ParsedGoal
 	if err := json.Unmarshal([]byte(jsonStr), &parsedGoal); err != nil {
-		return nil, fmt.Errorf("failed to parse LLM JSON: %v", err)
+		log.Printf("Failed to parse as single JSON, trying to merge multiple objects")
+		mergedJSON := extractAndMergeJSON(response)
+		if mergedJSON != "" {
+			if err := json.Unmarshal([]byte(mergedJSON), &parsedGoal); err != nil {
+				return nil, fmt.Errorf("failed to parse merged LLM JSON: %v", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to parse LLM JSON: %v", err)
+		}
 	}
 
-	// Convert to CommandSequence
 	sequence := convertToCommandSequence(&parsedGoal)
 
-	log.Printf("🤖 LLM Parsed into %d commands with confidence %.2f", len(sequence.Commands), parsedGoal.Confidence)
+	if sequence == nil {
+		return nil, fmt.Errorf("LLM generated no valid commands after filtering invalid actions")
+	}
+
+	log.Printf("LLM Parsed into %d commands with confidence %.2f", len(sequence.Commands), parsedGoal.Confidence)
 
 	return sequence, nil
 }
 
-// extractJSON extracts the first valid JSON object from LLM response
 func extractJSON(response string) string {
-	// Try to find JSON in code blocks first
 	codeBlockRegex := regexp.MustCompile("```(?:json)?\\s*([\\s\\S]*?)```")
 	matches := codeBlockRegex.FindStringSubmatch(response)
 	if len(matches) > 1 {
-		// Extract first JSON from code block
 		return extractFirstJSON(matches[1])
 	}
 
-	// Try to find first JSON object directly
 	return extractFirstJSON(response)
 }
 
-// extractFirstJSON finds the first complete JSON object in text
 func extractFirstJSON(text string) string {
 	text = strings.TrimSpace(text)
 
-	// Find the first opening brace
 	startIdx := strings.Index(text, "{")
 	if startIdx == -1 {
 		return ""
 	}
 
-	// Find the matching closing brace by counting braces
 	braceCount := 0
 	for i := startIdx; i < len(text); i++ {
 		if text[i] == '{' {
@@ -106,16 +105,12 @@ func extractFirstJSON(text string) string {
 		} else if text[i] == '}' {
 			braceCount--
 			if braceCount == 0 {
-				// Found matching closing brace
 				return text[startIdx : i+1]
 			}
 		}
 	}
 
-	// If no matching brace found, try to parse what we have
-	// This handles cases where JSON might be cut off
 	if startIdx < len(text) {
-		// Try to find end by looking for newline or next JSON object
 		endIdx := strings.Index(text[startIdx:], "\n\n")
 		if endIdx > 0 {
 			return text[startIdx : startIdx+endIdx]
@@ -126,11 +121,85 @@ func extractFirstJSON(text string) string {
 	return ""
 }
 
-// convertToCommandSequence converts ParsedGoal to CommandSequence
+func extractAndMergeJSON(response string) string {
+	var jsonObjects []ParsedGoal
+	text := strings.TrimSpace(response)
+
+	startIdx := 0
+	for startIdx < len(text) {
+		idx := strings.Index(text[startIdx:], "{")
+		if idx == -1 {
+			break
+		}
+		actualStart := startIdx + idx
+
+		braceCount := 0
+		endIdx := -1
+		for i := actualStart; i < len(text); i++ {
+			if text[i] == '{' {
+				braceCount++
+			} else if text[i] == '}' {
+				braceCount--
+				if braceCount == 0 {
+					endIdx = i + 1
+					break
+				}
+			}
+		}
+
+		if endIdx > actualStart {
+			jsonStr := text[actualStart:endIdx]
+			var obj ParsedGoal
+			if err := json.Unmarshal([]byte(jsonStr), &obj); err == nil {
+				jsonObjects = append(jsonObjects, obj)
+			}
+			startIdx = endIdx
+		} else {
+			break
+		}
+	}
+
+	if len(jsonObjects) == 0 {
+		return ""
+	}
+
+	merged := ParsedGoal{
+		Intent:     "multi_step",
+		Steps:      []LLMStep{},
+		Confidence: 0.0,
+	}
+
+	for _, obj := range jsonObjects {
+		merged.Steps = append(merged.Steps, obj.Steps...)
+		if obj.Confidence > merged.Confidence {
+			merged.Confidence = obj.Confidence
+		}
+	}
+
+	mergedJSON, err := json.Marshal(merged)
+	if err != nil {
+		return ""
+	}
+
+	log.Printf("Merged %d JSON objects into one with %d total steps", len(jsonObjects), len(merged.Steps))
+	return string(mergedJSON)
+}
+
 func convertToCommandSequence(parsed *ParsedGoal) *CommandSequence {
 	commands := []CommandPayload{}
+	validActions := map[string]bool{
+		"navigate":    true,
+		"input":       true,
+		"click":       true,
+		"get_content": true,
+	}
 
 	for _, step := range parsed.Steps {
+		if !validActions[step.Action] {
+			log.Printf("Filtering out invalid action: %s", step.Action)
+			continue
+		}
+
 		cmd := CommandPayload{
 			Action: step.Action,
 		}
@@ -150,6 +219,13 @@ func convertToCommandSequence(parsed *ParsedGoal) *CommandSequence {
 		commands = append(commands, cmd)
 	}
 
+	if len(commands) == 0 {
+		log.Printf("No valid commands after filtering invalid actions")
+		return nil
+	}
+
+	commands = postProcessCommands(commands)
+
 	return &CommandSequence{
 		Commands: commands,
 		Total:    len(commands),
@@ -157,15 +233,50 @@ func convertToCommandSequence(parsed *ParsedGoal) *CommandSequence {
 	}
 }
 
-// ShouldUseLLM determines if a goal should use LLM parsing
+func postProcessCommands(commands []CommandPayload) []CommandPayload {
+	filtered := []CommandPayload{}
+
+	for i, cmd := range commands {
+		if cmd.Action == "navigate" && cmd.URL != "" {
+			if strings.Contains(cmd.URL, "example.com") || strings.Contains(cmd.URL, "checkout") {
+				log.Printf("Removing hallucinated navigation: %s", cmd.URL)
+				continue
+			}
+		}
+
+		if cmd.Action == "click" && cmd.Selector != "" {
+			if strings.Contains(cmd.Selector, "example") {
+				log.Printf("Removing invalid selector: %s", cmd.Selector)
+				continue
+			}
+		}
+
+		if cmd.Action == "get_content" && i == 0 && len(commands) > 1 {
+			if i+1 < len(commands) && commands[i+1].Action == "click" {
+				log.Printf("Removing unnecessary get_content before click")
+				continue
+			}
+		}
+
+		filtered = append(filtered, cmd)
+	}
+
+	if len(filtered) == 0 {
+		log.Printf("Post-processing removed all commands, using original")
+		return commands
+	}
+
+	return filtered
+}
+
 func ShouldUseLLM(goal string) bool {
 	goal = strings.ToLower(strings.TrimSpace(goal))
 
-	// Use LLM for ambiguous goals
 	ambiguousKeywords := []string{
 		"find", "get", "show", "look for", "look up",
 		"what is", "tell me", "help me", "can you",
 		"i want", "i need", "please",
+		"select", "choose", "pick",
 	}
 
 	for _, keyword := range ambiguousKeywords {
@@ -174,12 +285,10 @@ func ShouldUseLLM(goal string) bool {
 		}
 	}
 
-	// Use LLM for long/complex goals
 	if len(goal) > 80 {
 		return true
 	}
 
-	// Use LLM if goal doesn't match simple patterns
 	simplePatterns := []string{
 		"navigate to", "go to", "visit",
 		"search for", "click", "type",
@@ -193,7 +302,6 @@ func ShouldUseLLM(goal string) bool {
 		}
 	}
 
-	// If no simple pattern and goal is complex, use LLM
 	if !hasSimplePattern && len(goal) > 30 {
 		return true
 	}

@@ -87,7 +87,7 @@ func (c *LLMClient) Generate(prompt string) (string, error) {
 	// Check status code
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("Ollama API returned status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("ollama API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	// Parse response
@@ -107,14 +107,14 @@ func (c *LLMClient) TestConnection() error {
 
 	resp, err := client.Get("http://localhost:11434/api/tags")
 	if err != nil {
-		return fmt.Errorf("Ollama is not running. Start it with: ollama serve")
+		return fmt.Errorf("ollama is not running. Start it with: ollama serve")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Ollama returned status %d", resp.StatusCode)
+		return fmt.Errorf("ollama returned status %d", resp.StatusCode)
 	}
 
-	log.Println("✅ Ollama connection successful")
+	log.Println("Ollama connection successful")
 	return nil
 }

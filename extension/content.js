@@ -402,6 +402,7 @@ function findElement(selector) {
       }
     }
     
+    
     return null;
   } catch (error) {
     console.error('Invalid selector:', selector, error);
@@ -428,14 +429,10 @@ function isElementInteractable(element) {
 
 function getPageContent() {
   try {
-    // Get interactive elements for better analysis
     const interactiveElements = [];
-    
-    // Limit the number of elements to avoid memory issues
     const MAX_ELEMENTS = 100;
     let elementCount = 0;
     
-    // Find all potentially interactive elements
     const allElements = document.querySelectorAll('input, button, a[href], select, textarea');
     
     for (const el of allElements) {
@@ -460,14 +457,11 @@ function getPageContent() {
           elementCount++;
         }
       } catch (error) {
-        // Skip elements that cause errors (e.g., cross-origin iframes)
         console.warn('Error processing element:', error);
         continue;
       }
     }
     
-    // Get limited text content instead of full HTML to prevent memory issues
-    // Only get visible text, not the entire HTML
     let pageText = '';
     try {
       pageText = document.body.innerText?.substring(0, 5000) || '';
@@ -475,8 +469,6 @@ function getPageContent() {
       console.warn('Error extracting page text:', error);
     }
     
-    // Don't include full HTML - it can be massive and cause memory issues
-    // Instead, just include metadata about the page structure
     return {
       title: document.title || '',
       url: window.location.href || '',
@@ -494,7 +486,6 @@ function getPageContent() {
     };
   } catch (error) {
     console.error('Error in getPageContent:', error);
-    // Return minimal content on error to prevent crashes
     return {
       title: document.title || '',
       url: window.location.href || '',
@@ -509,24 +500,19 @@ function getPageContent() {
   }
 }
 
-// Generate a reliable selector for an element
 function generateElementSelector(element) {
-  // Try ID first
   if (element.id) {
     return '#' + element.id;
   }
   
-  // Try name attribute
   if (element.name) {
     return `[name="${element.name}"]`;
   }
   
-  // Try role attribute
   if (element.getAttribute('role')) {
     return `[role="${element.getAttribute('role')}"]`;
   }
   
-  // Try unique class
   if (element.className && typeof element.className === 'string') {
     const classes = element.className.split(' ').filter(c => c.length > 0);
     if (classes.length === 1) {
@@ -534,12 +520,10 @@ function generateElementSelector(element) {
     }
   }
   
-  // Try type for inputs
   if (element.tagName.toLowerCase() === 'input' && element.type) {
     return `input[type="${element.type}"]`;
   }
   
-  // Fall back to tag name with position
   const siblings = Array.from(element.parentNode.children).filter(el => el.tagName === element.tagName);
   if (siblings.length === 1) {
     return element.tagName.toLowerCase();
@@ -606,7 +590,6 @@ if (document.readyState === 'loading') {
   console.log('Content script ready on:', window.location.href);
 }
 
-// Export for debugging
 window.cortexDebug = {
   executeCommand,
   findElement,

@@ -8,7 +8,7 @@ window.addEventListener('error', (event) => {
     const errorItem = document.createElement('div');
     errorItem.className = 'feedback-item';
     errorItem.innerHTML = `
-      <div class="feedback-icon error">❌</div>
+      <div class="feedback-icon error"></div>
       <div class="feedback-text">
         <div>Error occurred</div>
         <div class="feedback-details">${event.error?.message || 'Unknown error'}</div>
@@ -159,7 +159,7 @@ function handleSubmitGoal() {
 
     setExecutionState(true);
     showExecutionFeedback();
-    addFeedbackItem('🚀', 'Sending goal to backend...', goal, 'executing');
+    addFeedbackItem('', 'Sending goal to backend...', goal, 'executing');
 
     // Send goal to background script
     const message = {
@@ -170,15 +170,15 @@ function handleSubmitGoal() {
     chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
             console.error('Failed to send goal:', chrome.runtime.lastError.message);
-            addFeedbackItem('❌', 'Failed to send goal', chrome.runtime.lastError.message, 'error');
+            addFeedbackItem('', 'Failed to send goal', chrome.runtime.lastError.message, 'error');
             setExecutionState(false);
             return;
         }
 
         if (response?.status === 'sent') {
-            addFeedbackItem('✓', 'Goal sent to backend', 'Waiting for command...', 'success');
+            addFeedbackItem('', 'Goal sent to backend', 'Waiting for command...', 'success');
         } else {
-            addFeedbackItem('❌', 'Failed to send goal to backend', response?.message || 'Unknown error', 'error');
+            addFeedbackItem('', 'Failed to send goal to backend', response?.message || 'Unknown error', 'error');
             setExecutionState(false);
         }
     });
@@ -213,23 +213,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const details = message.payload.details;
             const elementsFound = message.payload.elementsFound;
             
-            addFeedbackItem('✅', `Executed: ${action}`, details, 'success');
+            addFeedbackItem('', `Executed: ${action}`, details, 'success');
             
             if (elementsFound) {
                 const elementSummary = `Found ${elementsFound.inputs} inputs, ${elementsFound.buttons} buttons, ${elementsFound.links} links`;
-                addFeedbackItem('📊', 'Page Analysis', elementSummary, 'success');
+                addFeedbackItem('', 'Page Analysis', elementSummary, 'success');
             }
             break;
             
         case 'COMMAND_FAILED':
             console.error('Command failed:', message.payload);
-            addFeedbackItem('❌', `Failed: ${message.payload.action}`, message.payload.error, 'error');
+            addFeedbackItem('', `Failed: ${message.payload.action}`, message.payload.error, 'error');
             setExecutionState(false);
             break;
             
         case 'EXECUTION_COMPLETE':
             console.log('Execution complete:', message.payload);
-            addFeedbackItem('🎉', 'Task Completed', message.payload.message || 'Task finished successfully', 'success');
+            addFeedbackItem('', 'Task Completed', message.payload.message || 'Task finished successfully', 'success');
             setExecutionState(false);
             break;
             
@@ -293,7 +293,7 @@ function handleContentAnalysisResult(analysis) {
     const analysisDiv = document.createElement('div');
     analysisDiv.className = 'page-analysis';
     
-    let analysisHTML = '<div class="page-analysis-title">🔍 Page Analysis</div>';
+    let analysisHTML = '<div class="page-analysis-title">Page Analysis</div>';
     
     if (analysis.contentType) {
         analysisHTML += `<div class="page-analysis-item">Type: ${analysis.contentType}</div>`;
@@ -333,7 +333,7 @@ function handleSequenceStarted(sequence) {
     timelineDiv.className = 'sequence-timeline';
     timelineDiv.id = 'sequenceTimeline';
     
-    let timelineHTML = '<div class="timeline-header">📋 Multi-Step Task</div>';
+    let timelineHTML = '<div class="timeline-header">Multi-Step Task</div>';
     timelineHTML += '<div class="timeline-steps">';
     
     sequence.commands.forEach((cmd, index) => {
@@ -382,10 +382,10 @@ function handleSequenceUpdate(sequence) {
 
 function getActionLabel(action) {
     const labels = {
-        'navigate': '🌐 Navigate',
-        'input': '⌨️ Input',
-        'click': '👆 Click',
-        'get_content': '📄 Get Content'
+        'navigate': 'Navigate',
+        'input': 'Input',
+        'click': 'Click',
+        'get_content': 'Get Content'
     };
     return labels[action] || action;
 }
@@ -484,11 +484,11 @@ function initializeVoiceRecognition() {
         
         // Show user-friendly error message
         if (event.error === 'no-speech') {
-            addFeedbackItem('🎤', 'No speech detected', 'Please try speaking again', 'error');
+            addFeedbackItem('', 'No speech detected', 'Please try speaking again', 'error');
         } else if (event.error === 'not-allowed') {
             // Don't add feedback here, showPermissionDeniedMessage will handle it
         } else {
-            addFeedbackItem('🎤', 'Voice recognition error', event.error, 'error');
+            addFeedbackItem('', 'Voice recognition error', event.error, 'error');
         }
     };
 
@@ -505,7 +505,7 @@ function toggleVoiceRecognition() {
     
     if (!recognition) {
         console.error('Recognition not initialized');
-        addFeedbackItem('🎤', 'Voice recognition not available', 'Your browser does not support voice input', 'error');
+        addFeedbackItem('', 'Voice recognition not available', 'Your browser does not support voice input', 'error');
         return;
     }
 
@@ -534,7 +534,6 @@ function startVoiceRecognition() {
             voiceStatus.className = 'voice-status';
         }
         
-        // Start speech recognition - this will trigger permission prompt if needed
         recognition.start();
         isRecording = true;
         
@@ -565,7 +564,7 @@ function startVoiceRecognition() {
             if (error.message.includes('not allowed') || error.message.includes('permission')) {
                 showPermissionDeniedMessage();
             } else {
-                addFeedbackItem('🎤', 'Failed to start recording', error.message, 'error');
+                addFeedbackItem('', 'Failed to start recording', error.message, 'error');
             }
         }
     }
@@ -641,7 +640,7 @@ function showPermissionDeniedMessage() {
     
     // Show detailed instructions
     const instructions = `
-🎤 Microphone Permission Required
+Microphone Permission Required
 
 To enable microphone access for this extension:
 
@@ -662,13 +661,13 @@ Method 2 (If already blocked):
 Note: The browser will show a permission prompt when you click the mic button.
     `;
     
-    addFeedbackItem('🎤', 'Microphone Permission Denied', instructions, 'error');
+    addFeedbackItem('', 'Microphone Permission Denied', instructions, 'error');
     
     // Also show in the welcome message area
     if (welcomeMessage) {
         welcomeMessage.innerHTML = `
             <div style="text-align: center; color: #ef4444; padding: 20px;">
-                <h3 style="margin: 0 0 10px 0;">🎤 Microphone Access Required</h3>
+                <h3 style="margin: 0 0 10px 0;">Microphone Access Required</h3>
                 <p style="font-size: 14px; line-height: 1.6; color: #9ca3af; margin-bottom: 15px;">
                     To use voice input, please enable microphone access.
                 </p>
@@ -683,7 +682,6 @@ Note: The browser will show a permission prompt when you click the mic button.
     }
 }
 
-// Export for debugging
 window.sidepanelDebug = {
     updateConnectionStatus,
     setExecutionState,

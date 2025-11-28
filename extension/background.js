@@ -260,7 +260,32 @@ async function executeCommand(command) {
       // Don't fail the command if notification fails
     }
 
-    // Send command completion to backend (for multi-step sequences)
+    if (command.action === 'navigate' || command.action === 'click') {
+      setTimeout(async () => {
+        try {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tab && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
+            const contentResult = await sendCommandToContent(tab, { action: 'get_content' });
+            if (contentResult && contentResult.html) {
+              sendToBackend({
+                type: 'PAGE_CONTENT',
+                payload: {
+                  html: contentResult.html,
+                  title: contentResult.title || tab.title,
+                  url: contentResult.url || tab.url,
+                  text: contentResult.text || '',
+                  readyState: contentResult.readyState || 'complete'
+                }
+              });
+              console.log('Auto-captured page content for context-aware prompts');
+            }
+          }
+        } catch (error) {
+          console.log('Could not auto-capture page content:', error.message);
+        }
+      }, 3000);
+    }
+
     if (currentSequence) {
       try {
         sendToBackend({
@@ -516,12 +541,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return true;
         }
         
-        try {
-          const success = sendToBackend(message);
-          sendResponse({ status: success ? 'sent' : 'failed' });
-        } catch (error) {
-          console.error('Error sending task to backend:', error);
-          sendResponse({ status: 'error', message: error.message || 'Failed to send task' });
+        const goal = message.payload?.goal?.toLowerCase() || '';
+        const needsContext = goal.includes('click on') || goal.includes('select');
+        
+        if (needsContext) {
+          (async () => {
+            try {
+              const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+              if (tab && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
+                const contentResult = await sendCommandToContent(tab, { action: 'get_content' });
+                if (contentResult && contentResult.html) {
+                  sendToBackend({
+                    type: 'PAGE_CONTENT',
+                    payload: {
+                      html: contentResult.html,
+                      title: contentResult.title || tab.title,
+                      url: contentResult.url || tab.url,
+                      text: contentResult.text || '',
+                      readyState: contentResult.readyState || 'complete'
+                    }
+                  });
+                  console.log('Auto-captured page content for context-aware goal');
+                  
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                }
+              }
+            } catch (error) {
+              console.log('Could not capture page content:', error.message);
+            }
+            
+            try {
+              const success = sendToBackend(message);
+              sendResponse({ status: success ? 'sent' : 'failed' });
+            } catch (error) {
+              console.error('Error sending task to backend:', error);
+              sendResponse({ status: 'error', message: error.message || 'Failed to send task' });
+            }
+          })();
+          return true; // Async response
+        } else {
+          try {
+            const success = sendToBackend(message);
+            sendResponse({ status: success ? 'sent' : 'failed' });
+          } catch (error) {
+            console.error('Error sending task to backend:', error);
+            sendResponse({ status: 'error', message: error.message || 'Failed to send task' });
+          }
         }
         break;
         
@@ -532,10 +597,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         
         try {
-          // Limit payload size to prevent memory issues
-          if (message.payload && message.payload.html) {
-            // Don't send full HTML if it exists
-            delete message.payload.html;
+          if (message.payload && message.payload.html && message.payload.html.length > 500000) {
+            message.payload.html = message.payload.html.substring(0, 500000) + '... [truncated]';
           }
           
           const contentSuccess = sendToBackend(message);
@@ -547,7 +610,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
 
       default:
-        // Forward other messages to backend
         try {
           if (isConnected) {
             sendToBackend(message);

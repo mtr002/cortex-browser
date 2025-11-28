@@ -26,9 +26,9 @@ go run main.go
 
 You should see:
 ```
-🤖 Initializing LLM client...
-✅ Ollama connection successful
-✅ LLM enabled with model: mistral:latest
+Initializing LLM client...
+Ollama connection successful
+LLM enabled with model: mistral:latest
 ```
 
 ### 3. Test It!
@@ -75,10 +75,10 @@ Just don't set `USE_LLM=true` - the system will use rule-based parsing only.
 
 ## Free and Local!
 
-✅ **Ollama is completely free**
-✅ **Runs locally on your machine**
-✅ **No API keys needed**
-✅ **No rate limits**
-✅ **Privacy - your data stays local**
+**Ollama is completely free**
+**Runs locally on your machine**
+**No API keys needed**
+**No rate limits**
+**Privacy - your data stays local**
 
-Enjoy intelligent goal parsing! 🚀
+Enjoy intelligent goal parsing! 
