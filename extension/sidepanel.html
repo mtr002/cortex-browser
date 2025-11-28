@@ -101,10 +101,55 @@
             min-height: 20px;
             max-height: 120px;
             line-height: 1.4;
+            overflow: hidden;
+            overflow-y: hidden;
+            overflow-x: hidden;
         }
 
         #goalInput::placeholder {
             color: #6b7280;
+        }
+
+        #micBtn {
+            padding: 12px;
+            background: transparent;
+            color: #6b7280;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 44px;
+            min-height: 44px;
+            margin-left: 4px;
+            position: relative;
+            z-index: 10;
+            pointer-events: auto;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        #micBtn:hover {
+            background: rgba(59, 130, 246, 0.1);
+            color: #3b82f6;
+        }
+
+        #micBtn.recording {
+            background: #ef4444;
+            color: white;
+            animation: pulse 1.5s infinite;
+        }
+
+        #micBtn.recording:hover {
+            background: #dc2626;
+        }
+
+        .mic-icon {
+            width: 20px;
+            height: 20px;
+            display: block;
         }
 
         #submitBtn {
@@ -224,11 +269,15 @@
             margin: 20px 0;
         }
         
-        .feedback-header h3 {
-            margin: 0 0 12px 0;
+        .status-display {
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .status-text {
             font-size: 14px;
-            font-weight: 500;
-            color: #3b82f6;
+            color: #d1d5db;
+            word-break: break-word;
         }
         
         .feedback-item {
@@ -275,121 +324,92 @@
             margin-top: 2px;
         }
         
-        .page-analysis {
-            background: rgba(59, 130, 246, 0.1);
-            border: 1px solid rgba(59, 130, 246, 0.3);
-            border-radius: 8px;
-            padding: 12px;
-            margin: 8px 0;
-        }
-        
-        .page-analysis-title {
-            font-size: 12px;
-            font-weight: 500;
-            color: #3b82f6;
-            margin-bottom: 8px;
-        }
-        
-        .page-analysis-item {
-            font-size: 11px;
-            color: #d1d5db;
-            margin: 2px 0;
-        }
-        
-        /* Sequence Timeline Styles */
-        .sequence-timeline {
-            width: 100%;
-            background: rgba(17, 24, 39, 0.8);
-            border: 1px solid rgba(59, 130, 246, 0.3);
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-        }
-        
-        .timeline-header {
-            font-size: 14px;
-            font-weight: 600;
-            color: #3b82f6;
-            margin-bottom: 16px;
-            text-align: center;
-        }
-        
-        .timeline-steps {
-            display: flex;
+
+        /* Voice Recording Overlay */
+        .voice-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
             flex-direction: column;
-            gap: 12px;
         }
-        
-        .timeline-step {
+
+        .voice-overlay.active {
             display: flex;
-            align-items: flex-start;
-            gap: 12px;
-            padding: 12px;
-            background: rgba(17, 24, 39, 0.6);
-            border-radius: 8px;
-            border: 2px solid transparent;
-            transition: all 0.3s ease;
         }
-        
-        .timeline-step.pending {
-            opacity: 0.5;
-            border-color: rgba(107, 114, 128, 0.3);
-        }
-        
-        .timeline-step.active {
-            border-color: #3b82f6;
-            background: rgba(59, 130, 246, 0.1);
-            box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
-        }
-        
-        .timeline-step.completed {
-            border-color: #22c55e;
-            background: rgba(34, 197, 94, 0.1);
-        }
-        
-        .step-number {
-            width: 32px;
-            height: 32px;
+
+        .voice-circle {
+            width: 120px;
+            height: 120px;
             border-radius: 50%;
+            background: #ef4444;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-weight: 600;
-            font-size: 14px;
-            flex-shrink: 0;
+            position: relative;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            animation: pulse-ring 2s infinite;
         }
-        
-        .timeline-step.pending .step-number {
-            background: rgba(107, 114, 128, 0.3);
-            color: #6b7280;
+
+        .voice-circle:hover {
+            transform: scale(1.05);
         }
-        
-        .timeline-step.active .step-number {
-            background: #3b82f6;
+
+        .voice-circle.recording {
+            animation: pulse-ring 1s infinite, pulse-scale 1s infinite;
+        }
+
+        @keyframes pulse-ring {
+            0% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            }
+            50% {
+                box-shadow: 0 0 0 20px rgba(239, 68, 68, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+
+        @keyframes pulse-scale {
+            0%, 100% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.1);
+            }
+        }
+
+        .voice-circle-icon {
+            width: 48px;
+            height: 48px;
             color: white;
-            animation: pulse 2s infinite;
+            z-index: 1;
         }
-        
-        .timeline-step.completed .step-number {
-            background: #22c55e;
+
+        .voice-status {
+            margin-top: 24px;
             color: white;
-        }
-        
-        .step-content {
-            flex: 1;
-        }
-        
-        .step-action {
-            font-size: 13px;
+            font-size: 16px;
             font-weight: 500;
-            color: #ffffff;
-            margin-bottom: 4px;
+            text-align: center;
         }
-        
-        .step-details {
-            font-size: 11px;
-            color: #9ca3af;
-            word-break: break-word;
+
+        .voice-status.listening {
+            color: #60a5fa;
+        }
+
+        .voice-status.processing {
+            color: #fbbf24;
         }
 
         /* Responsive design */
@@ -426,9 +446,6 @@
             
             <!-- Execution Feedback Area -->
             <div class="execution-feedback" id="executionFeedback" style="display: none;">
-                <div class="feedback-header">
-                    <h3>Execution Progress</h3>
-                </div>
                 <div class="feedback-content" id="feedbackContent">
                     <!-- Dynamic content will be added here -->
                 </div>
@@ -444,10 +461,19 @@
                 <div class="input-group">
                     <textarea 
                         id="goalInput" 
-                        placeholder="Navigate to google.com and search for something..."
+                        placeholder="Search"
                         maxlength="500"
                         rows="1"
+                        style="overflow: hidden;"
                     ></textarea>
+                    <button id="micBtn" type="button" title="Voice input">
+                        <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                            <line x1="12" y1="19" x2="12" y2="23"/>
+                            <line x1="8" y1="23" x2="16" y2="23"/>
+                        </svg>
+                    </button>
                     <button id="submitBtn" disabled>
                         <div class="loading"></div>
                         <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -458,6 +484,19 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Voice Recording Overlay -->
+    <div class="voice-overlay" id="voiceOverlay">
+        <div class="voice-circle" id="voiceCircle">
+            <svg class="voice-circle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+        </div>
+        <div class="voice-status" id="voiceStatus">Click to start recording</div>
     </div>
 
     <script src="sidepanel.js"></script>
