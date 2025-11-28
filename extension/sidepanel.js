@@ -1,5 +1,29 @@
 console.log('Sidepanel script loaded');
 
+// Global error handlers to prevent crashes
+window.addEventListener('error', (event) => {
+  console.error('Global error in sidepanel:', event.error);
+  // Show user-friendly error message
+  if (feedbackContent) {
+    const errorItem = document.createElement('div');
+    errorItem.className = 'feedback-item';
+    errorItem.innerHTML = `
+      <div class="feedback-icon error">❌</div>
+      <div class="feedback-text">
+        <div>Error occurred</div>
+        <div class="feedback-details">${event.error?.message || 'Unknown error'}</div>
+      </div>
+    `;
+    feedbackContent.appendChild(errorItem);
+  }
+  event.preventDefault();
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled promise rejection in sidepanel:', event.reason);
+  event.preventDefault();
+});
+
 // DOM Elements
 const statusDot = document.getElementById('statusDot');
 const goalInput = document.getElementById('goalInput');
@@ -12,12 +36,21 @@ const feedbackContent = document.getElementById('feedbackContent');
 let isConnected = false;
 let isExecuting = false;
 let currentSequence = null;
+let connectionCheckInterval = null; // Store interval ID for cleanup
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     checkBackgroundConnection();
     setupTextareaResize();
+});
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    if (connectionCheckInterval) {
+        clearInterval(connectionCheckInterval);
+        connectionCheckInterval = null;
+    }
 });
 
 function setupEventListeners() {
@@ -48,21 +81,34 @@ function setupTextareaResize() {
 }
 
 function checkBackgroundConnection() {
+    // Clear existing interval if it exists to prevent duplicates
+    if (connectionCheckInterval) {
+        clearInterval(connectionCheckInterval);
+    }
+    
     // Check if background script is ready and connected to backend
-    chrome.runtime.sendMessage({ type: 'CHECK_CONNECTION' }, (response) => {
-        if (chrome.runtime.lastError) {
-            updateConnectionStatus('disconnected', 'Background script error');
-            return;
-        }
-        
-        updateConnectionStatus(
-            response?.connected ? 'connected' : 'disconnected',
-            response?.connected ? 'Backend connected' : 'Backend disconnected'
-        );
-    });
+    try {
+        chrome.runtime.sendMessage({ type: 'CHECK_CONNECTION' }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error('Connection check error:', chrome.runtime.lastError);
+                updateConnectionStatus('disconnected', 'Background script error');
+                return;
+            }
+            
+            updateConnectionStatus(
+                response?.connected ? 'connected' : 'disconnected',
+                response?.connected ? 'Backend connected' : 'Backend disconnected'
+            );
+        });
+    } catch (error) {
+        console.error('Failed to check connection:', error);
+        updateConnectionStatus('disconnected', 'Connection check failed');
+    }
 
-    // Check periodically
-    setInterval(checkBackgroundConnection, 5000);
+    // Check periodically - only set once
+    if (!connectionCheckInterval) {
+        connectionCheckInterval = setInterval(checkBackgroundConnection, 5000);
+    }
 }
 
 function updateConnectionStatus(status, message) {
