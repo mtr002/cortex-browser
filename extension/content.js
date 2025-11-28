@@ -1,50 +1,102 @@
 console.log('Content script loaded on:', window.location.href);
 
-// Listen for messages from background script
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('Content script received message:', message);
-  
-  if (message.type === 'PING') {
-    sendResponse({ status: 'ready' });
-    return;
-  }
-  
-  if (message.type === 'EXECUTE_COMMAND') {
-    executeCommand(message.payload)
-      .then(result => {
-        console.log('Command executed successfully:', result);
-        sendResponse({
-          success: true,
-          ...result
-        });
-      })
-      .catch(error => {
-        console.error('Command execution failed:', error);
-        sendResponse({
-          success: false,
-          error: error.message
-        });
-      });
-    
-    return true; // Keep channel open for async response
-  }
-  
-  sendResponse({status: 'received'});
+// Global error handlers to prevent crashes
+window.addEventListener('error', (event) => {
+  console.error('Global error in content script:', event.error);
+  event.preventDefault();
 });
 
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled promise rejection in content script:', event.reason);
+  event.preventDefault();
+});
+
+// Prevent multiple listeners from being registered
+// Check if listener is already registered
+let messageListenerRegistered = false;
+
+// Listen for messages from background script
+if (!messageListenerRegistered) {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    try {
+      console.log('Content script received message:', message);
+      
+      if (message.type === 'PING') {
+        sendResponse({ status: 'ready' });
+        return true;
+      }
+      
+      if (message.type === 'EXECUTE_COMMAND') {
+        executeCommand(message.payload)
+          .then(result => {
+            try {
+              console.log('Command executed successfully:', result);
+              sendResponse({
+                success: true,
+                ...result
+              });
+            } catch (responseError) {
+              console.error('Error sending response:', responseError);
+              // Response may have already been sent
+            }
+          })
+          .catch(error => {
+            try {
+              console.error('Command execution failed:', error);
+              sendResponse({
+                success: false,
+                error: error.message || 'Unknown error'
+              });
+            } catch (responseError) {
+              console.error('Error sending error response:', responseError);
+            }
+          });
+        
+        return true; // Keep channel open for async response
+      }
+      
+      sendResponse({status: 'received'});
+      return true;
+    } catch (error) {
+      console.error('Error in message listener:', error);
+      try {
+        sendResponse({
+          success: false,
+          error: error.message || 'Unknown error in message handler'
+        });
+      } catch (responseError) {
+        // Response channel may be closed
+      }
+      return true;
+    }
+  });
+  
+  messageListenerRegistered = true;
+}
+
 async function executeCommand(command) {
-  console.log('Executing command:', command);
-  console.log('Current URL:', window.location.href);
-  console.log('Document ready state:', document.readyState);
-  
-  // Ensure document is ready
-  if (document.readyState === 'loading') {
-    await new Promise(resolve => {
-      document.addEventListener('DOMContentLoaded', resolve);
-    });
-  }
-  
   try {
+    console.log('Executing command:', command);
+    console.log('Current URL:', window.location.href);
+    console.log('Document ready state:', document.readyState);
+    
+    // Validate command
+    if (!command || !command.action) {
+      throw new Error('Invalid command: missing action');
+    }
+    
+    // Ensure document is ready with timeout
+    if (document.readyState === 'loading') {
+      await Promise.race([
+        new Promise(resolve => {
+          document.addEventListener('DOMContentLoaded', resolve, { once: true });
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Document load timeout')), 10000)
+        )
+      ]);
+    }
+    
     switch (command.action) {
       case 'click':
         return await executeClickCommand(command);
@@ -58,7 +110,8 @@ async function executeCommand(command) {
   } catch (error) {
     console.error('Command execution error:', error);
     console.error('Command details:', command);
-    throw error;
+    // Re-throw with more context
+    throw new Error(`Command execution failed: ${error.message}`);
   }
 }
 
@@ -374,43 +427,86 @@ function isElementInteractable(element) {
 }
 
 function getPageContent() {
-  // Get interactive elements for better analysis
-  const interactiveElements = [];
-  
-  // Find all potentially interactive elements
-  document.querySelectorAll('input, button, a[href], select, textarea').forEach((el, index) => {
-    const rect = el.getBoundingClientRect();
-    const isVisible = rect.width > 0 && rect.height > 0 && 
-                     window.getComputedStyle(el).display !== 'none';
+  try {
+    // Get interactive elements for better analysis
+    const interactiveElements = [];
     
-    if (isVisible) {
-      interactiveElements.push({
-        tag: el.tagName.toLowerCase(),
-        type: el.type || '',
-        id: el.id || '',
-        name: el.name || '',
-        className: el.className || '',
-        text: el.textContent?.trim().substring(0, 100) || '',
-        href: el.href || '',
-        selector: generateElementSelector(el)
-      });
+    // Limit the number of elements to avoid memory issues
+    const MAX_ELEMENTS = 100;
+    let elementCount = 0;
+    
+    // Find all potentially interactive elements
+    const allElements = document.querySelectorAll('input, button, a[href], select, textarea');
+    
+    for (const el of allElements) {
+      if (elementCount >= MAX_ELEMENTS) break;
+      
+      try {
+        const rect = el.getBoundingClientRect();
+        const isVisible = rect.width > 0 && rect.height > 0 && 
+                         window.getComputedStyle(el).display !== 'none';
+        
+        if (isVisible) {
+          interactiveElements.push({
+            tag: el.tagName.toLowerCase(),
+            type: el.type || '',
+            id: el.id || '',
+            name: el.name || '',
+            className: el.className || '',
+            text: el.textContent?.trim().substring(0, 100) || '',
+            href: el.href || '',
+            selector: generateElementSelector(el)
+          });
+          elementCount++;
+        }
+      } catch (error) {
+        // Skip elements that cause errors (e.g., cross-origin iframes)
+        console.warn('Error processing element:', error);
+        continue;
+      }
     }
-  });
-  
-  return {
-    html: document.documentElement.outerHTML,
-    title: document.title,
-    url: window.location.href,
-    text: document.body.innerText?.substring(0, 5000) || '',
-    readyState: document.readyState,
-    interactiveElements: interactiveElements,
-    metadata: {
-      hasSearchBox: !!document.querySelector('input[type="search"], input[name="q"], [role="searchbox"]'),
-      hasForms: document.querySelectorAll('form').length > 0,
-      hasNavigation: !!document.querySelector('nav, .navigation, .navbar'),
-      domain: window.location.hostname
+    
+    // Get limited text content instead of full HTML to prevent memory issues
+    // Only get visible text, not the entire HTML
+    let pageText = '';
+    try {
+      pageText = document.body.innerText?.substring(0, 5000) || '';
+    } catch (error) {
+      console.warn('Error extracting page text:', error);
     }
-  };
+    
+    // Don't include full HTML - it can be massive and cause memory issues
+    // Instead, just include metadata about the page structure
+    return {
+      title: document.title || '',
+      url: window.location.href || '',
+      text: pageText,
+      readyState: document.readyState || 'unknown',
+      interactiveElements: interactiveElements,
+      metadata: {
+        hasSearchBox: !!document.querySelector('input[type="search"], input[name="q"], [role="searchbox"]'),
+        hasForms: document.querySelectorAll('form').length > 0,
+        hasNavigation: !!document.querySelector('nav, .navigation, .navbar'),
+        domain: window.location.hostname || '',
+        totalElements: allElements.length,
+        visibleElements: elementCount
+      }
+    };
+  } catch (error) {
+    console.error('Error in getPageContent:', error);
+    // Return minimal content on error to prevent crashes
+    return {
+      title: document.title || '',
+      url: window.location.href || '',
+      text: '',
+      readyState: 'error',
+      interactiveElements: [],
+      metadata: {
+        error: error.message,
+        domain: window.location.hostname || ''
+      }
+    };
+  }
 }
 
 // Generate a reliable selector for an element

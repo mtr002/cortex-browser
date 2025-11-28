@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"cortex-browser/backend/llm"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gorilla/websocket"
@@ -94,6 +97,10 @@ var upgrader = websocket.Upgrader{
 var activeTasks = make(map[string]*TaskState)
 var taskCounter int64
 
+// LLM client (optional, for intelligent goal parsing)
+var llmClient *llm.LLMClient
+var useLLM bool
+
 func handler(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -176,7 +183,7 @@ func handleCommandComplete(conn *websocket.Conn, payload interface{}) error {
 	}
 
 	// Find the task by checking active tasks
-	// In a real implementation, we'd use taskID from result
+	// Look for executing task first, then any pending task
 	var taskState *TaskState
 	for _, task := range activeTasks {
 		if task.Status == "executing" {
@@ -185,8 +192,22 @@ func handleCommandComplete(conn *websocket.Conn, payload interface{}) error {
 		}
 	}
 
+	// If no executing task found, try to find any active task
 	if taskState == nil {
-		log.Println("No active task found for command completion")
+		for _, task := range activeTasks {
+			if task.Status == "pending" || task.Status == "executing" {
+				taskState = task
+				// Set to executing if it was pending
+				if taskState.Status == "pending" {
+					taskState.Status = "executing"
+				}
+				break
+			}
+		}
+	}
+
+	if taskState == nil {
+		log.Printf("No active task found for command completion. Active tasks: %d", len(activeTasks))
 		return nil
 	}
 
@@ -289,8 +310,15 @@ func handleExecuteTaskWithCompletion(conn *websocket.Conn, payload interface{}) 
 	}
 	activeTasks[taskID] = taskState
 
+	// Set task ID in sequence
+	sequence.TaskID = taskID
+
 	// If single command, send it directly (backward compatible)
 	if len(sequence.Commands) == 1 {
+		taskState.Status = "executing"
+		sequence.Current = 0
+		sequence.Total = 1
+
 		command := sequence.Commands[0]
 		if err := sendMessage(conn, &Message{
 			Type:    "COMMAND",
@@ -299,20 +327,8 @@ func handleExecuteTaskWithCompletion(conn *websocket.Conn, payload interface{}) 
 			return err
 		}
 
-		// Send completion after delay
-		go func() {
-			if command.Action == "navigate" {
-				time.Sleep(2 * time.Second)
-			} else {
-				time.Sleep(1 * time.Second)
-			}
-			sendMessage(conn, &Message{
-				Type: "TASK_COMPLETE",
-				Payload: TaskCompletePayload{
-					Message: fmt.Sprintf("Successfully executed: %s", taskPayload.Goal),
-				},
-			})
-		}()
+		// For single commands, we still wait for COMMAND_COMPLETE
+		// The completion handler will send TASK_COMPLETE
 	} else {
 		// Multi-step sequence - send sequence info and first command
 		taskState.Status = "executing"
@@ -362,11 +378,39 @@ func generateTaskID() string {
 	return fmt.Sprintf("task_%d_%d", time.Now().Unix(), counter)
 }
 
-// Parse goal into command sequence (supports multi-step)
+// Parse goal into command sequence (supports multi-step and LLM)
 func parseGoalToSequence(goal string) *CommandSequence {
+	originalGoal := goal
 	goal = strings.ToLower(strings.TrimSpace(goal))
 	log.Printf("Parsing goal to sequence: %s", goal)
 
+	// Try LLM first if enabled and goal is complex/ambiguous
+	if useLLM && llmClient != nil && llm.ShouldUseLLM(originalGoal) {
+		log.Println("🤖 Using LLM for goal parsing")
+		llmSequence, err := llm.ParseGoalWithLLM(llmClient, originalGoal, nil)
+		if err != nil {
+			log.Printf("⚠️  LLM parsing failed: %v, falling back to rules", err)
+		} else if llmSequence != nil && len(llmSequence.Commands) > 0 {
+			// Convert LLM sequence to main package sequence
+			commands := make([]CommandPayload, len(llmSequence.Commands))
+			for i, cmd := range llmSequence.Commands {
+				commands[i] = CommandPayload{
+					Action:   cmd.Action,
+					URL:      cmd.URL,
+					Selector: cmd.Selector,
+					Text:     cmd.Text,
+				}
+			}
+			return &CommandSequence{
+				Commands: commands,
+				Total:    len(commands),
+				Current:  0,
+			}
+		}
+		// Fall through to rule-based if LLM fails
+	}
+
+	// Rule-based parsing (existing logic)
 	commands := []CommandPayload{}
 
 	// Check for multi-step patterns
@@ -760,6 +804,30 @@ func generateActionSuggestions(doc *goquery.Document) []string {
 }
 
 func main() {
+	// Check if LLM should be enabled
+	useLLM = os.Getenv("USE_LLM") == "true" || os.Getenv("USE_LLM") == "1"
+	llmModel := os.Getenv("LLM_MODEL")
+	if llmModel == "" {
+		llmModel = "mistral:latest"
+	}
+
+	if useLLM {
+		log.Println("🤖 Initializing LLM client...")
+		llmClient = llm.NewLLMClient(llmModel)
+
+		// Test connection
+		if err := llmClient.TestConnection(); err != nil {
+			log.Printf("⚠️  LLM not available: %v", err)
+			log.Println("   Continuing with rule-based parsing only")
+			log.Println("   To enable LLM: Start Ollama (ollama serve) and set USE_LLM=true")
+			useLLM = false
+		} else {
+			log.Printf("✅ LLM enabled with model: %s", llmModel)
+		}
+	} else {
+		log.Println("📝 Using rule-based parsing (set USE_LLM=true to enable AI)")
+	}
+
 	flag.Parse()
 
 	http.HandleFunc("/ws", handler)
